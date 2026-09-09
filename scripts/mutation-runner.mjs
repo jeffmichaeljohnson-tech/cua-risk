@@ -54,6 +54,11 @@ export function runOne(root, spec, exec) {
   }
   let out = '', code = 0;
   try {
+    // Record what is on disk BEFORE writing it, so a signal handler (layer 2
+    // below) can undo the mutation if the process is interrupted between
+    // mutations. This was declared and read but never assigned, so the handler
+    // could never fire -- dead defensive code that read as a working guarantee.
+    inFlight = { file, before, rel: spec.file };
     // A FUNCTION as the replacement, deliberately. Passing a string lets JS
     // interpret $&, $`, $', $$ and $1..$9 inside it as substitution patterns,
     // which silently corrupts any mutation whose replacement contains a dollar
