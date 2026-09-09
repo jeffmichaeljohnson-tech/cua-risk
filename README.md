@@ -15,7 +15,7 @@ are auto. Irreversible verbs are confirm.
 cargo test
 ```
 
-94 tests, all passing. They are the specification: each names the case it pins.
+113 tests, all passing. They are the specification: each names the case it pins.
 
 The property that matters is that neither degenerate classifier can pass. Both
 were measured rather than asserted -- by replacing every entry point with a
@@ -23,8 +23,8 @@ constant and running the suite:
 
 | classifier | result |
 |---|---|
-| block everything | **53 of 94 fail** |
-| approve everything | **69 of 94 fail** |
+| block everything | **60 of 113 fail** |
+| approve everything | **75 of 113 fail** |
 
 So the suite constrains the answer from both sides. An earlier version of this
 paragraph claimed the negative half was deliberately larger than the positive
@@ -39,7 +39,7 @@ code were wrong. So the mutations are committed rather than described:
 node scripts/mutation-runner.mjs . mutations.json
 ```
 
-`mutations.json` lists sixteen changes to real logic. The runner applies each one,
+`mutations.json` lists twenty-three changes to real logic. The runner applies each one,
 runs the suite, restores the file and verifies the restore by hash. It reports
 four verdicts, and the third is why it exists:
 
@@ -76,25 +76,97 @@ A label reaches this code from the DOM on the web, and from whatever string an
 application publishes through the accessibility API on the desktop. Both are
 attacker-controlled where it counts, and every marker table here is ASCII.
 
-Measured before it was fixed: `browser_click` on a control labelled `Send`
-returned `Confirm`, and the same click on `Sеnd` -- with U+0435 CYRILLIC SMALL
-LETTER IE, which renders identically -- returned `Auto`. Worse, `browser_type`
-into a field labelled with fullwidth `ＯＴＰ code` returned `Auto` where the ASCII
+Measured before any of it was fixed: `browser_click` on a control labelled `Send`
+returned `Confirm`, and the same click on `Sеnd` — with U+0435 CYRILLIC SMALL
+LETTER IE, which renders identically — returned `Auto`. `browser_type` into a
+field labelled with fullwidth `ＯＴＰ code` returned `Auto` where the ASCII
 spelling is a hard `Blocked`. Because every label rule only ever ESCALATES, a
 missed match fails in the permissive direction and nothing reports it.
 
-`fold_label` now folds three mechanical classes toward ASCII -- fullwidth forms,
-the Cyrillic and Greek letters that render as Latin ones, and non-ASCII spaces
-and dashes -- and deletes zero-width and bidi format characters outright, since
-they render as nothing and would otherwise break a keyword invisibly.
+There are two mechanisms, and the second exists because the first can never be
+finished.
 
-**It is not a UTS #39 confusable skeleton and it is not complete.** No fold is.
-The design therefore never rests on it: `browser_submit` confirms whatever its
-label says, an unrecognised tool defaults to `Confirm`, and the fold only adds
-escalations on top. Both properties are pinned by tests that use a homoglyph the
-fold does not carry. The residual exposure is worth naming rather than hiding: a
-generic `browser_click` or `browser_type` has no tool-name signal, so for those
-the label is the only evidence there is.
+### 1. The fold, which has one rule
+
+> A character is folded when it is **invisible**, or when it renders as an ASCII
+> character in a different typeface. A character that renders as something
+> visibly different is left alone.
+
+So `Ｓｅｎｄ`, `𝐒𝐞𝐧𝐝`, `Ѕепd` and `Se<ZWSP>nd` all fold to `send`, while `Sénd`
+does not — an accented vowel is a glyph a reader can see, and folding it would
+silently rewrite non-English labels.
+
+Two consequences of stating the rule that way rather than accumulating cases:
+
+- **The invisible set is a Unicode property, not a list.** It is
+  `Default_Ignorable_Code_Point` — the definition of "a character a conforming
+  renderer draws nothing for". The previous hand-picked list covered zero-width
+  spaces and bidi controls and missed `U+034F COMBINING GRAPHEME JOINER`, so
+  `Se<CGJ>nd` reached `Auto`. Asking Unicode what counts as invisible has an
+  authoritative answer; asking which invisible characters I happened to think of
+  does not.
+- **Combining marks are deliberately NOT stripped.** Stripping them would fold
+  the decomposed spelling of `Sénd` and leave the precomposed one, so the same
+  label would classify two ways depending on which normalisation form it arrived
+  in. A test pins that both reach the same tier.
+
+Mathematical Alphanumeric Symbols fold too (`𝐒𝐞𝐧𝐝`, `𝕊𝕖𝕟𝕕`, `𝚂𝚎𝚗𝚍`) — the most
+casually available spoof there is, since social platforms hand them out as a
+styling affordance. The block is thirteen 26-letter runs per case, so the mapping
+is arithmetic; the explicit arm beside it is the holes, glyphs Unicode had
+already assigned in Letterlike Symbols. Without those, `ℛ` fails to fold while
+its neighbours in the same word succeed, which is worse than not folding at all.
+
+### 2. The shape detector, which is what makes the fold's completeness stop mattering
+
+No fold is ever complete, and a security control resting on one is resting on an
+enumeration. So `label_is_suspicious` reads the **raw** label — before folding,
+because folding is what erases the evidence — and asks a question that needs no
+table: *does an ASCII letter sit directly against a Cyrillic or Greek letter, or
+against an invisible character?*
+
+That is the shape of every mixed-script spoof, whether or not the fold knows the
+particular codepoint. The two mechanisms are complementary by construction:
+
+| spoof | example | caught by |
+|---|---|---|
+| whole-script | `Ѕепԁ` — every letter swapped, no ASCII left | the fold |
+| mixed-script | `Sеnd` — one letter swapped | the detector |
+| invisible | `Se<CGJ>nd` | both |
+| typeface | `𝐒𝐞𝐧𝐝` | the fold |
+
+A suspicious label never lowers a tier. It raises `Auto` to `Confirm`, which
+costs one human glance at a label the classifier is telling you it could not read
+with confidence.
+
+**The must-not-fire half is the larger one, and it is a fairness constraint as
+much as a usability one.** Only Cyrillic and Greek are treated as confusable,
+because they are the scripts that share letterforms with Latin. A label mixing
+ASCII with CJK, Arabic or Hebrew is an ordinary bilingual label, and flagging it
+would penalise every non-English interface for no security gain. Adjacency rather
+than same-word co-occurrence is what keeps `α-version` and `Ω Reset` quiet: a
+real label puts the Greek letter beside punctuation or a space, a spoof puts it
+inside the word. `Отправить`, `送信`, `Wi-Fi設定`, `café` and its decomposed
+spelling all classify exactly as they would in English.
+
+### What is still not covered, stated plainly
+
+This is **not** a UTS #39 confusable skeleton; the full table is larger than a
+zero-dependency crate should carry. Precomposed accented Latin is not folded, by
+the rule above. And nothing here rests on either mechanism in any case: the tool
+name decides first wherever a tool name carries the meaning (`browser_submit`
+confirms whatever its label says), and an unrecognised tool defaults to
+`Confirm`. Tests pin both of those using a homoglyph the fold does not carry.
+
+### One test worth reading
+
+`every_letter_a_marker_depends_on_is_accounted_for` derives its alphabet from the
+marker tables themselves, then requires every letter to have either a folded
+look-alike fixture or an explicit declaration that Cyrillic and Greek offer none.
+Add a marker that leans on a letter this fold cannot normalise and the test fails
+naming the letter and what to do about it, rather than the gap surfacing in the
+field. A companion test keeps the exemption list honest, so it cannot become a
+place to hide letters.
 
 ## Status
 

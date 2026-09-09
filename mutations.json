@@ -47,14 +47,14 @@
     {
       "name": "the web path loses its fail-closed default",
       "file": "src/lib.rs",
-      "find": "        tier: if reversible {\n            Tier::Auto\n        } else {\n            Tier::Confirm\n        },",
-      "replace": "        tier: Tier::Auto,"
+      "find": "        Tier::Auto\n    } else {\n        Tier::Confirm\n    };",
+      "replace": "        Tier::Auto\n    } else {\n        Tier::Auto\n    };"
     },
     {
       "name": "the web path blocks everything instead (over-strict)",
       "file": "src/lib.rs",
-      "find": "        tier: if reversible {\n            Tier::Auto\n        } else {\n            Tier::Confirm\n        },",
-      "replace": "        tier: Tier::Confirm,"
+      "find": "        Tier::Auto\n    } else {\n        Tier::Confirm\n    };",
+      "replace": "        Tier::Blocked\n    } else {\n        Tier::Blocked\n    };"
     },
     {
       "name": "case-insensitive web tool matching becomes a bypass",
@@ -89,14 +89,56 @@
     {
       "name": "the fold stops deleting zero-width characters (Se<ZWSP>nd stops matching)",
       "file": "src/lib.rs",
-      "find": "            | '\\u{feff}' => continue,",
-      "replace": "            | '\\u{feff}' => ' ',"
+      "find": "            c if is_default_ignorable(c) => continue,",
+      "replace": "            c if is_default_ignorable(c) => c,"
     },
     {
       "name": "the fold lowercases FIRST, so a fullwidth capital never reaches ASCII",
       "file": "src/lib.rs",
       "find": "    out.to_lowercase()\n}",
       "replace": "    out\n}"
+    },
+    {
+      "name": "the web path stops asking whether the label is spoof-shaped",
+      "file": "src/lib.rs",
+      "find": "    let tier = if reversible && !label_is_suspicious(ctx.element_label) {",
+      "replace": "    let tier = if reversible {"
+    },
+    {
+      "name": "the desktop path stops asking whether the label is spoof-shaped",
+      "file": "src/lib.rs",
+      "find": "        max_tier(effective, Tier::Confirm)",
+      "replace": "        effective"
+    },
+    {
+      "name": "the invisible-character set narrows back, dropping the grapheme joiner",
+      "file": "src/lib.rs",
+      "find": "            | '\\u{034f}'            // COMBINING GRAPHEME JOINER",
+      "replace": "            | '\\u{0000}' // (grapheme joiner removed)"
+    },
+    {
+      "name": "mathematical alphanumerics stop folding to the letters they render as",
+      "file": "src/lib.rs",
+      "find": "            c if math_alphanumeric_to_ascii(c).is_some() => {",
+      "replace": "            c if false && math_alphanumeric_to_ascii(c).is_some() => {"
+    },
+    {
+      "name": "the Letterlike holes are dropped, so one letter of a word stops folding",
+      "file": "src/lib.rs",
+      "find": "        '\\u{211b}' | '\\u{211c}' | '\\u{211d}' => 'R',",
+      "replace": "        '\\u{211c}' | '\\u{211d}' => 'R',"
+    },
+    {
+      "name": "adjacency is checked in one direction only",
+      "file": "src/lib.rs",
+      "find": "            if (p.is_ascii_alphabetic() && risky(cur)) || (risky(p) && cur.is_ascii_alphabetic()) {",
+      "replace": "            if p.is_ascii_alphabetic() && risky(cur) {"
+    },
+    {
+      "name": "the confusable-script range widens over CJK, penalising every CJK label",
+      "file": "src/lib.rs",
+      "find": "        '\\u{0370}'..='\\u{03ff}'     // Greek and Coptic",
+      "replace": "        '\\u{0370}'..='\\u{9fff}' // Greek and Coptic"
     }
   ]
 }

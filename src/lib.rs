@@ -122,6 +122,16 @@ pub fn classify(ctx: &ActionContext<'_>) -> Tier {
     };
 
     let effective = max_tier(base, label_tier);
+
+    // Same rule as the web path, for the same reason: an accessibility label is
+    // whatever string the frontmost application chose to publish. A label with
+    // the shape of a spoof is raised to at least Confirm -- never lowered.
+    let effective = if label_is_suspicious(ctx.element_label) {
+        max_tier(effective, Tier::Confirm)
+    } else {
+        effective
+    };
+
     apply_cross_app_escalation(effective, ctx)
 }
 
@@ -368,14 +378,22 @@ pub fn classify_web(ctx: &WebActionContext<'_>) -> WebVerdict {
             | "browser_type"
     );
 
-    WebVerdict {
-        tier: if reversible {
-            Tier::Auto
-        } else {
-            Tier::Confirm
-        },
-        class: None,
-    }
+    // A label the classifier cannot claim to have READ does not get the
+    // permissive answer. `reversible` above says the TOOL is reversible; it says
+    // nothing about what the control does, and for a generic click or keystroke
+    // the label is the only evidence there is. When that label has the shape of
+    // a spoof, the honest verdict is one human glance, not silence.
+    //
+    // This is the arm that makes the fold's completeness stop being
+    // load-bearing: a mixed-script label escalates here whether or not
+    // `fold_label` happens to know the codepoint that was swapped in.
+    let tier = if reversible && !label_is_suspicious(ctx.element_label) {
+        Tier::Auto
+    } else {
+        Tier::Confirm
+    };
+
+    WebVerdict { tier, class: None }
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +414,164 @@ fn base_tier(ctx: &ActionContext<'_>) -> Tier {
 // Label folding
 // ---------------------------------------------------------------------------
 
+/// Does Unicode say a conforming renderer draws NOTHING for this character?
+///
+/// This is the `Default_Ignorable_Code_Point` property, transcribed. It is used
+/// instead of a hand-picked list because a hand-picked list is what let
+/// `U+034F COMBINING GRAPHEME JOINER` through: the enumerated set here covered
+/// zero-width spaces and bidi controls, and CGJ is neither, yet it renders as
+/// nothing just the same. Asking "what does Unicode call invisible" is a
+/// question with an authoritative answer; asking "which invisible characters
+/// did I think of" is not.
+fn is_default_ignorable(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00ad}'                  // SOFT HYPHEN
+            | '\u{034f}'            // COMBINING GRAPHEME JOINER
+            | '\u{061c}'            // ARABIC LETTER MARK
+            | '\u{115f}'..='\u{1160}' // HANGUL CHOSEONG/JUNGSEONG FILLER
+            | '\u{17b4}'..='\u{17b5}'
+            | '\u{180b}'..='\u{180f}' // MONGOLIAN selectors + vowel separator
+            | '\u{200b}'..='\u{200f}' // ZWSP, ZWNJ, ZWJ, LRM, RLM
+            | '\u{202a}'..='\u{202e}' // bidi embedding / override
+            | '\u{2060}'..='\u{206f}' // word joiner, invisible operators, isolates
+            | '\u{3164}'            // HANGUL FILLER
+            | '\u{fe00}'..='\u{fe0f}' // VARIATION SELECTOR-1..16
+            | '\u{feff}'            // ZERO WIDTH NO-BREAK SPACE (BOM)
+            | '\u{ffa0}'            // HALFWIDTH HANGUL FILLER
+            | '\u{fff0}'..='\u{fff8}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}' // tags and variation selectors supplement
+    )
+}
+
+/// The ASCII letter a Mathematical Alphanumeric Symbol renders as, if any.
+///
+/// `𝐒𝐞𝐧𝐝`, `𝕊𝕖𝕟𝕕` and `𝚂𝚎𝚗𝚍` are read by every human as `Send`; they are the
+/// most casually available spoof there is, because social platforms hand them
+/// out as a styling affordance. The block is thirteen 26-letter runs per case,
+/// so the mapping is arithmetic rather than a table -- except that Unicode had
+/// already assigned some of those glyphs in Letterlike Symbols and left holes in
+/// the runs. Those are the explicit arm below; without it `ℋ`, `ℝ` and `ℯ` fold
+/// to nothing while their neighbours in the same word fold correctly, which is a
+/// worse failure than not folding the block at all.
+fn math_alphanumeric_to_ascii(c: char) -> Option<char> {
+    const UPPER_RUNS: [u32; 13] = [
+        0x1d400, 0x1d434, 0x1d468, 0x1d49c, 0x1d4d0, 0x1d504, 0x1d538, 0x1d56c, 0x1d5a0, 0x1d5d4,
+        0x1d608, 0x1d63c, 0x1d670,
+    ];
+    const LOWER_RUNS: [u32; 13] = [
+        0x1d41a, 0x1d44e, 0x1d482, 0x1d4b6, 0x1d4ea, 0x1d51e, 0x1d552, 0x1d586, 0x1d5ba, 0x1d5ee,
+        0x1d622, 0x1d656, 0x1d68a,
+    ];
+    let cp = c as u32;
+    for start in UPPER_RUNS {
+        if (start..start + 26).contains(&cp) {
+            return char::from_u32(u32::from(b'A') + (cp - start));
+        }
+    }
+    for start in LOWER_RUNS {
+        if (start..start + 26).contains(&cp) {
+            return char::from_u32(u32::from(b'a') + (cp - start));
+        }
+    }
+    // The holes: glyphs that belong to the runs above but live in Letterlike
+    // Symbols because they were encoded before the block existed.
+    Some(match c {
+        '\u{210e}' => 'h',
+        '\u{212c}' => 'B',
+        '\u{2130}' => 'E',
+        '\u{2131}' => 'F',
+        '\u{210b}' | '\u{210c}' | '\u{210d}' => 'H',
+        '\u{2110}' | '\u{2111}' => 'I',
+        '\u{2112}' => 'L',
+        '\u{2133}' => 'M',
+        '\u{211b}' | '\u{211c}' | '\u{211d}' => 'R',
+        '\u{212f}' => 'e',
+        '\u{210a}' => 'g',
+        '\u{2134}' => 'o',
+        '\u{212d}' | '\u{2102}' => 'C',
+        '\u{2115}' => 'N',
+        '\u{2119}' => 'P',
+        '\u{211a}' => 'Q',
+        '\u{2128}' | '\u{2124}' => 'Z',
+        '\u{2145}' => 'D',
+        '\u{2146}' => 'd',
+        '\u{2147}' => 'e',
+        '\u{2148}' => 'i',
+        '\u{2149}' => 'j',
+        _ => return None,
+    })
+}
+
+/// Is this a letter from a script whose characters are routinely mistaken for
+/// Latin ones? Cyrillic and Greek only -- the two scripts that share letterforms
+/// with Latin. CJK, Arabic, Hebrew and the rest are NOT here, deliberately: they
+/// look nothing like Latin letters, so a label mixing them with ASCII is an
+/// ordinary bilingual label rather than a spoof, and flagging it would penalise
+/// every non-English interface for no security gain.
+fn is_latin_confusable_script(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0370}'..='\u{03ff}'     // Greek and Coptic
+            | '\u{0400}'..='\u{04ff}' // Cyrillic
+            | '\u{0500}'..='\u{052f}' // Cyrillic Supplement
+            | '\u{1f00}'..='\u{1fff}' // Greek Extended
+            | '\u{2de0}'..='\u{2dff}' // Cyrillic Extended-A
+            | '\u{a640}'..='\u{a69f}' // Cyrillic Extended-B
+    )
+}
+
+/// Does this label have the SHAPE of a spoof, whatever its specific codepoints?
+///
+/// This is the check that makes [`fold_label`]'s completeness stop being
+/// load-bearing, and it is the answer to the obvious objection that no fold can
+/// enumerate every confusable. It reads the RAW label -- before folding, because
+/// folding is precisely what erases the evidence -- and asks a question that
+/// needs no table: **does an ASCII letter sit directly against a Cyrillic or
+/// Greek letter, or against an invisible character?**
+///
+/// That is the shape of every mixed-script spoof, including the ones this
+/// crate's fold does not know:
+///
+/// ```text
+///   "Send"          ascii only                  -> not suspicious
+///   "Sеnd"          ascii + Cyrillic е          -> SUSPICIOUS
+///   "Se<CGJ>nd"     ascii + invisible           -> SUSPICIOUS
+///   "Отправить"     one script, no ascii        -> not suspicious
+///   "Send Отправить" two words, each pure       -> not suspicious
+///   "Wi-Fi設定"      ascii + CJK                 -> not suspicious
+///   "café"          precomposed Latin           -> not suspicious
+///   "cafe" + U+0301 decomposed Latin            -> not suspicious
+/// ```
+///
+/// Adjacency rather than same-word co-occurrence is what keeps `α-version` and
+/// `Ω Reset` quiet: a legitimate label puts a Greek letter beside a separator or
+/// a space, a spoof puts it inside the word. And a genuine bilingual label keeps
+/// its scripts in separate words, which is why the two-word case above is silent.
+///
+/// A suspicious label never lowers a tier -- it can only raise `Auto` to
+/// `Confirm`, which costs one human glance at a label the classifier is telling
+/// you it could not read with confidence.
+fn label_is_suspicious(label: Option<&str>) -> bool {
+    let label = match label {
+        Some(l) if !l.trim().is_empty() => l,
+        _ => return false,
+    };
+    let risky = |c: char| is_latin_confusable_script(c) || is_default_ignorable(c);
+    let mut prev: Option<char> = None;
+    for cur in label.chars() {
+        if let Some(p) = prev {
+            if (p.is_ascii_alphabetic() && risky(cur)) || (risky(p) && cur.is_ascii_alphabetic()) {
+                return true;
+            }
+        }
+        prev = Some(cur);
+    }
+    false
+}
+
 /// Fold a free-text label toward ASCII before matching a marker against it.
 ///
 /// Every marker table in this file is ASCII. A label is not: on the web it comes
@@ -405,42 +581,62 @@ fn base_tier(ctx: &ActionContext<'_>) -> Tier {
 /// `Send` but that no ASCII marker matches, and because every label rule here
 /// only ever ESCALATES, a missed match silently returns the permissive answer.
 ///
-/// Three mechanical classes are folded, each chosen because it has an exact
-/// ASCII equivalent rather than a judgement call:
+/// The fold has ONE rule, and everything in it follows from that rule:
 ///
-///   1. Fullwidth forms (U+FF01..U+FF5E), which map onto ASCII by subtraction.
-///   2. The Cyrillic and Greek letters whose ordinary rendering is
-///      indistinguishable from a Latin letter used by a marker below.
-///   3. Unicode spaces and dashes, so `one-time` still matches when the hyphen
-///      is U+2011 and the space is U+00A0.
+/// > A character is folded when it is INVISIBLE, or when it renders as an ASCII
+/// > character in a different typeface. A character that renders as something
+/// > visibly different is left alone.
 ///
-/// Zero-width and bidirectional format characters are DELETED rather than
-/// mapped: they render as nothing, so a human sees `Send` where the bytes say
-/// `Se<ZWSP>nd`, and no marker can match across the break.
+/// So `Ｓｅｎｄ` (fullwidth), `𝐒𝐞𝐧𝐝` (mathematical bold), `Ѕепd` (Cyrillic
+/// look-alikes) and `Se<ZWSP>nd` all fold to `send` -- while `Sénd` does not.
+/// An accented vowel is a glyph a reader can see, and folding it would silently
+/// rewrite non-English labels. Drawing the line at visibility rather than at
+/// convenience is also what keeps the two Unicode normalisation forms of `Sénd`
+/// behaving identically, which an ad-hoc "strip the combining marks" rule would
+/// not: it would fold the decomposed spelling and leave the precomposed one, so
+/// the same label would classify two different ways depending on where it came
+/// from.
 ///
-/// **This is not a UTS #39 confusable skeleton, and it is not complete.** The
-/// full table is larger than a zero-dependency crate should carry, and no fold
-/// is ever finished -- a label built around this one can still miss. That is why
-/// nothing here RESTS on the fold: the tool name decides first wherever a tool
-/// name carries the meaning (`browser_submit` confirms whatever its label says),
-/// an unrecognised tool defaults to `Confirm`, and the fold only adds
-/// escalations on top. The residual exposure is real and worth naming: a generic
-/// `browser_click` or `browser_type` carries no tool-name signal, so for those
-/// the label is the only evidence there is.
+/// Invisible characters are DELETED rather than mapped, because they render as
+/// nothing: a human sees `Send` where the bytes say `Se<ZWSP>nd`, and no marker
+/// can match across the break. The set is not hand-picked -- it is Unicode's own
+/// `Default_Ignorable_Code_Point` property (see [`is_default_ignorable`]), which
+/// is the definition of "a character a conforming renderer draws nothing for".
+/// That widening is not cosmetic: the previous enumerated list covered
+/// zero-width spaces and bidi controls but missed `U+034F COMBINING GRAPHEME
+/// JOINER`, and `Se<CGJ>nd` reached `Auto` on a `browser_click`.
+///
+/// **This is still not a UTS #39 confusable skeleton.** The full confusables
+/// table is larger than a zero-dependency crate should carry, and no fold is
+/// ever finished. What changed is that the fold is no longer the only thing
+/// standing between an attacker-authored label and a tier. [`label_is_suspicious`]
+/// reads the RAW label and escalates whenever ASCII sits directly against
+/// Cyrillic, Greek or an invisible character -- the shape every one of these
+/// spoofs has, whether or not this table knows the particular codepoint. The two
+/// are complementary by construction: the fold catches the WHOLE-script spoof
+/// (`Ѕепԁ`, every letter swapped, no ASCII left to be adjacent to), the detector
+/// catches the MIXED-script one (`Sеnd`, a single letter swapped). Neither alone
+/// is complete; the pair is what makes completeness stop being load-bearing.
+///
+/// Nothing here rests on the fold in any case: the tool name decides first
+/// wherever a tool name carries the meaning (`browser_submit` confirms whatever
+/// its label says) and an unrecognised tool defaults to `Confirm`.
 fn fold_label(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         let folded = match ch {
-            // Zero-width, soft hyphen and bidi format characters: they render as
-            // nothing, so they must not be able to break a keyword.
-            '\u{00ad}'
-            | '\u{200b}'..='\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{feff}' => continue,
+            // Invisible: renders as nothing, so it must not be able to break a
+            // keyword. Decided by Unicode's property, not by an enumeration.
+            c if is_default_ignorable(c) => continue,
 
             // Fullwidth ASCII: an exact one-to-one mapping.
             '\u{ff01}'..='\u{ff5e}' => char::from_u32(ch as u32 - 0xff01 + 0x21).unwrap_or(ch),
+
+            // Mathematical Alphanumeric Symbols and the Letterlike glyphs that
+            // belong with them: a different typeface for an ASCII letter.
+            c if math_alphanumeric_to_ascii(c).is_some() => {
+                math_alphanumeric_to_ascii(c).unwrap_or(ch)
+            }
 
             // Spaces that are not U+0020.
             '\u{00a0}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => ' ',
@@ -1969,11 +2165,31 @@ mod fold_tests {
         );
     }
 
+    // The original of this test used a Cyrillic-swapped "Rеad more" and asserted
+    // Auto, conflating two separate promises. They are stated apart now, because
+    // the second deliberately changed: a folded letter must not MANUFACTURE a
+    // marker match, but a label carrying one is still spoof-SHAPED and no longer
+    // earns silence.
     #[test]
-    fn a_label_that_merely_contains_a_folded_letter_is_not_escalated() {
+    fn folding_a_benign_ascii_label_does_not_manufacture_a_marker_match() {
+        assert_eq!(
+            classify_web(&web("browser_click", "Read more")).tier,
+            Tier::Auto
+        );
+        assert_eq!(
+            classify_web(&web("browser_click", "Preferences")).tier,
+            Tier::Auto
+        );
+    }
+
+    #[test]
+    fn a_cyrillic_swapped_label_is_escalated_even_when_it_matches_no_marker() {
+        // "Rеad more" names no irreversible verb even after folding. It is still
+        // a label whose bytes and whose rendering disagree, which is the whole
+        // signal -- a legitimate "Read more" has no reason to carry a Cyrillic е.
         assert_eq!(
             classify_web(&web("browser_click", "R\u{0435}ad more")).tier,
-            Tier::Auto
+            Tier::Confirm
         );
     }
 
@@ -2019,5 +2235,309 @@ mod fold_tests {
     fn fold_label_is_idempotent() {
         let once = fold_label("S\u{0435}\u{200b}nd\u{2011}now");
         assert_eq!(fold_label(&once), once);
+    }
+}
+
+#[cfg(test)]
+mod spoof_shape_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn web(tool: &'static str, label: &'static str) -> WebActionContext<'static> {
+        WebActionContext {
+            tool,
+            element_role: None,
+            element_label: Some(label),
+        }
+    }
+
+    fn desk(tool: &'static str, label: &'static str) -> ActionContext<'static> {
+        ActionContext {
+            tool,
+            element_label: Some(label),
+            element_role: None,
+            app_bundle_id: None,
+            allowed_apps: &[],
+        }
+    }
+
+    // -- the bypass that motivated all of this -----------------------------
+
+    #[test]
+    fn a_combining_grapheme_joiner_no_longer_buys_silence() {
+        // U+034F renders as nothing. Before the Default_Ignorable widening this
+        // reached Auto: the enumerated delete-set covered zero-width spaces and
+        // bidi controls, and CGJ is neither.
+        assert_eq!(
+            classify_web(&web("browser_click", "Se\u{034f}nd")).tier,
+            Tier::Confirm
+        );
+        assert_eq!(fold_label("Se\u{034f}nd"), "send");
+    }
+
+    #[test]
+    fn the_other_invisible_characters_the_enumerated_list_missed() {
+        for label in [
+            "Se\u{180e}nd",  // MONGOLIAN VOWEL SEPARATOR
+            "Se\u{fe0f}nd",  // VARIATION SELECTOR-16
+            "Se\u{115f}nd",  // HANGUL CHOSEONG FILLER
+            "Se\u{3164}nd",  // HANGUL FILLER
+            "Se\u{2066}nd",  // LEFT-TO-RIGHT ISOLATE
+            "Se\u{e0001}nd", // LANGUAGE TAG
+        ] {
+            assert_eq!(fold_label(label), "send", "not folded: {label:?}");
+        }
+    }
+
+    #[test]
+    fn mathematical_alphanumerics_fold_to_the_letters_they_render_as() {
+        assert_eq!(fold_label("\u{1d412}\u{1d41e}\u{1d427}\u{1d41d}"), "send"); // bold
+        assert_eq!(fold_label("\u{1d54a}\u{1d556}\u{1d55f}\u{1d555}"), "send"); // double-struck
+        assert_eq!(fold_label("\u{1d682}\u{1d68e}\u{1d697}\u{1d68d}"), "send"); // monospace
+        assert_eq!(fold_label("\u{1d5e6}\u{1d5f2}\u{1d5fb}\u{1d5f1}"), "send"); // sans bold
+    }
+
+    #[test]
+    fn the_letterlike_holes_fold_with_their_own_runs() {
+        // Script capital R lives at U+211B, not in the 1D49C run, because it was
+        // encoded before the block existed. Folding the run but not the holes
+        // would leave one letter of a word un-normalised.
+        assert_eq!(fold_label("\u{211b}"), "r");
+        assert_eq!(fold_label("\u{210e}"), "h");
+        assert_eq!(fold_label("\u{2115}"), "n");
+        assert_eq!(fold_label("\u{212f}"), "e");
+    }
+
+    #[test]
+    fn a_math_styled_send_button_does_not_reach_auto() {
+        assert_eq!(
+            classify_web(&web(
+                "browser_click",
+                "\u{1d412}\u{1d41e}\u{1d427}\u{1d41d}"
+            ))
+            .tier,
+            Tier::Confirm
+        );
+    }
+
+    // -- the detector, which is what makes the fold non-load-bearing --------
+
+    #[test]
+    fn a_mixed_script_label_escalates_even_when_the_fold_does_not_know_the_codepoint() {
+        // U+A64B CYRILLIC SMALL LETTER MONOGRAPH UK is NOT in the homoglyph map,
+        // deliberately: this asserts the detector alone carries the case. If a
+        // future map addition covers it, the assertion still holds -- which is
+        // the point of having two independent mechanisms.
+        assert!(!matches!(fold_label("\u{a64b}").chars().next(), Some(c) if c.is_ascii()));
+        assert_eq!(
+            classify_web(&web("browser_click", "S\u{a64b}nd")).tier,
+            Tier::Confirm
+        );
+    }
+
+    #[test]
+    fn suspicion_applies_on_the_desktop_path_too() {
+        assert_eq!(
+            classify(&desk("gui.click", "R\u{0435}ad more")),
+            Tier::Confirm
+        );
+        assert_eq!(classify(&desk("gui.click", "Read more")), Tier::Auto);
+    }
+
+    #[test]
+    fn suspicion_never_lowers_a_tier() {
+        // A hard block stays a hard block; the escalation is one-directional.
+        assert_eq!(
+            classify_web(&web("browser_type", "P\u{0430}ssword")).tier,
+            Tier::Blocked
+        );
+        assert_eq!(
+            classify_web(&web("browser_submit", "\u{0405}end")).tier,
+            Tier::Confirm
+        );
+    }
+
+    // -- the must-NOT-fire half, which is the larger one --------------------
+
+    #[test]
+    fn a_single_script_non_latin_label_is_not_suspicious() {
+        // Penalising every non-English interface would be a real cost for no
+        // security gain, so one script and no ASCII is silent.
+        for label in [
+            "\u{041e}\u{0442}\u{043f}\u{0440}\u{0430}\u{0432}\u{0438}\u{0442}\u{044c}",
+            "\u{9001}\u{4fe1}",
+            "\u{0625}\u{0631}\u{0633}\u{0627}\u{0644}",
+        ] {
+            assert!(!label_is_suspicious(Some(label)), "fired on {label:?}");
+        }
+    }
+
+    #[test]
+    fn a_bilingual_label_keeps_its_scripts_in_separate_words_and_is_silent() {
+        assert!(!label_is_suspicious(Some(
+            "Send \u{041e}\u{0442}\u{043f}\u{0440}\u{0430}\u{0432}\u{0438}\u{0442}\u{044c}"
+        )));
+    }
+
+    #[test]
+    fn ascii_beside_cjk_is_an_ordinary_label_not_a_spoof() {
+        // CJK shares no letterforms with Latin, so mixing is never a spoof.
+        assert!(!label_is_suspicious(Some("Wi-Fi\u{8a2d}\u{5b9a}")));
+        assert_eq!(
+            classify_web(&web("browser_click", "Wi-Fi\u{8a2d}\u{5b9a}")).tier,
+            Tier::Auto
+        );
+    }
+
+    #[test]
+    fn both_normalisation_forms_of_an_accented_label_behave_the_same() {
+        // The invariant that decided where the fold stops. A "strip the
+        // combining marks" rule would fold the decomposed spelling and leave the
+        // precomposed one, so the SAME label would classify two ways depending
+        // on which normalisation form it happened to arrive in.
+        //
+        // Note what is asserted and what is not. The two fold to different
+        // STRINGS -- they were different strings to begin with and the fold
+        // leaves both alone, so string equality was never the claim, and
+        // asserting it here failed against correct code while this test was
+        // being written. The claim is behavioural: every marker is ASCII, so
+        // neither form matches one, and both reach the same tier.
+        let precomposed = "Caf\u{e9}";
+        let decomposed = "Cafe\u{301}";
+        assert_eq!(
+            classify_web(&web("browser_click", "Caf\u{e9}")).tier,
+            classify_web(&web("browser_click", "Cafe\u{301}")).tier
+        );
+        assert!(!label_is_suspicious(Some(precomposed)));
+        assert!(!label_is_suspicious(Some(decomposed)));
+        // And neither is mistaken for the ASCII spelling.
+        assert_ne!(fold_label(precomposed), "cafe");
+        assert_ne!(fold_label(decomposed), "cafe");
+    }
+
+    #[test]
+    fn a_greek_letter_beside_a_separator_is_not_a_spoof() {
+        // Adjacency rather than same-word co-occurrence is what keeps these
+        // quiet: a real label puts the Greek letter next to punctuation or a
+        // space, a spoof puts it inside the word.
+        assert!(!label_is_suspicious(Some("\u{03b1}-version")));
+        assert!(!label_is_suspicious(Some("\u{03a9} Reset")));
+        assert!(label_is_suspicious(Some("v\u{03b5}rsion")));
+    }
+
+    #[test]
+    fn a_confusable_at_the_start_of_a_word_is_caught_too() {
+        // Adjacency is checked in both directions. A one-directional scan would
+        // pass every test above, because in all of them the ASCII letter comes
+        // first -- so this is the case that pins the second clause.
+        assert!(label_is_suspicious(Some("\u{0405}end")));
+        assert!(label_is_suspicious(Some("\u{200b}Send")));
+    }
+
+    #[test]
+    fn an_empty_or_absent_label_is_not_suspicious() {
+        assert!(!label_is_suspicious(None));
+        assert!(!label_is_suspicious(Some("")));
+        assert!(!label_is_suspicious(Some("   ")));
+    }
+
+    #[test]
+    fn plain_ascii_labels_are_never_suspicious() {
+        for label in ["Send", "Cancel", "Read more", "Wi-Fi", "e-mail", "2-step"] {
+            assert!(!label_is_suspicious(Some(label)), "fired on {label:?}");
+        }
+    }
+
+    // -- forcing function: coverage derived from the marker tables ----------
+
+    /// One documented look-alike per ASCII letter, used to prove the fold
+    /// normalises the letters the markers actually depend on.
+    fn look_alike(c: char) -> Option<char> {
+        Some(match c {
+            'a' => '\u{0430}',
+            'b' => '\u{0432}',
+            'c' => '\u{0441}',
+            'd' => '\u{0501}',
+            'e' => '\u{0435}',
+            'h' => '\u{04bb}',
+            'i' => '\u{0456}',
+            'j' => '\u{0458}',
+            'k' => '\u{043a}',
+            'm' => '\u{043c}',
+            'o' => '\u{043e}',
+            'p' => '\u{0440}',
+            'q' => '\u{051b}',
+            's' => '\u{0455}',
+            't' => '\u{0442}',
+            'u' => '\u{03c5}',
+            'v' => '\u{0475}',
+            'w' => '\u{051d}',
+            'x' => '\u{0445}',
+            'y' => '\u{0443}',
+            _ => return None,
+        })
+    }
+
+    /// Letters for which Cyrillic and Greek offer no ordinary look-alike. Being
+    /// on this list is a CLAIM, checked by the test below -- not a way to opt a
+    /// letter out.
+    const LETTERS_WITH_NO_LOOK_ALIKE: &[char] = &['f', 'g', 'l', 'n', 'r', 'z'];
+
+    fn marker_alphabet() -> BTreeSet<char> {
+        let mut out = BTreeSet::new();
+        for table in [
+            WEB_IRREVERSIBLE_VERBS,
+            WEB_EMAIL_MARKERS,
+            WEB_SOCIAL_MARKERS,
+            WEB_DOCUMENT_MARKERS,
+            WEB_2FA_MARKERS,
+            ACTION_VERBS,
+            TIER2_LABELS,
+            FILE_OP_LABELS,
+        ] {
+            for marker in table {
+                for c in marker.chars().filter(|c| c.is_ascii_alphabetic()) {
+                    out.insert(c);
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_letter_a_marker_depends_on_is_accounted_for() {
+        // Derived from the marker tables rather than hand-listed, so adding a
+        // marker that leans on a letter this fold cannot normalise fails HERE
+        // rather than in the field.
+        for letter in marker_alphabet() {
+            match look_alike(letter) {
+                Some(k) => assert_eq!(
+                    fold_label(&k.to_string()),
+                    letter.to_string(),
+                    "the marker tables depend on '{letter}' and its look-alike \
+                     U+{:04X} does not fold to it",
+                    k as u32
+                ),
+                None => assert!(
+                    LETTERS_WITH_NO_LOOK_ALIKE.contains(&letter),
+                    "the marker tables gained '{letter}' and there is no look-alike \
+                     fixture for it: add one to look_alike(), or -- after checking \
+                     that Cyrillic and Greek really offer none -- declare it in \
+                     LETTERS_WITH_NO_LOOK_ALIKE"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn the_no_look_alike_list_is_honest() {
+        // A letter cannot sit on the exemption list while a fixture exists for
+        // it, or the list would become a place to hide gaps.
+        for c in LETTERS_WITH_NO_LOOK_ALIKE {
+            assert!(
+                look_alike(*c).is_none(),
+                "'{c}' is declared to have no look-alike but look_alike() returns one"
+            );
+        }
     }
 }
