@@ -6,7 +6,7 @@
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { runOne, runAll, report, KILLED, SURVIVED, INCONCLUSIVE, NOT_APPLIED }
+import { runOne, runAll, report, checkBaseline, KILLED, SURVIVED, INCONCLUSIVE, NOT_APPLIED }
   from './mutation-runner.mjs';
 
 let pass = 0, fail = 0;
@@ -90,6 +90,19 @@ t('the mutation is genuinely in the file while the command runs', () => {
   rmSync(d, { recursive: true });
 });
 
+t('a $ in the replacement is literal, not a substitution pattern', () => {
+  // JS expands $&, $`, $', $$ and $1..$9 inside a STRING replacement. A spec
+  // whose replacement contains one would be silently mangled and the verdict
+  // would describe code nobody wrote.
+  const d = mkdtempSync(path.join(tmpdir(), 'mut-'));
+  writeFileSync(path.join(d, 'a.js'), 'const cost = 5;\n');
+  let seen = null;
+  runOne(d, { name: 'dollar', file: 'a.js', find: '5', replace: "price$`$&$$", ran: '.' },
+    () => { seen = readFileSync(path.join(d, 'a.js'), 'utf8'); return { out: 'x', code: 1 }; });
+  eq(seen, 'const cost = price$`$&$$;\n', 'replacement was mangled');
+  rmSync(d, { recursive: true });
+});
+
 console.log('\nRESTORATION');
 
 t('the file is byte-identical after a run', () => {
@@ -115,6 +128,31 @@ t('a NOT-APPLIED mutation leaves the file untouched', () => {
   runOne(d, spec({ find: 'absent' }), exec('Tests  1 passed', 0));
   eq(readFileSync(path.join(d, 'a.js'), 'utf8'), SRC, 'content');
   rmSync(d, { recursive: true });
+});
+
+console.log('\nBASELINE');
+
+t('a green baseline is ok', () => {
+  assert(checkBaseline(exec('Tests  10 passed', 0), 'Tests\\s+\\d+').ok, 'green baseline rejected');
+});
+
+t('a RED baseline aborts, and names the leftover-mutation cause', () => {
+  // The incident this encodes: a run was killed mid-mutation, the restore never
+  // happened, and the mutated file silently became the next run's baseline. Two
+  // mutations then reported NOT-APPLIED because their search text was already
+  // gone -- a wrong answer that looked like a clean result.
+  const r = checkBaseline(exec('Tests  9 passed | 1 failed', 1), 'Tests\\s+\\d+');
+  assert(!r.ok, 'a failing baseline was accepted');
+  assert(/leftover mutation/.test(r.why), `cause not named: ${r.why}`);
+  assert(/git status/.test(r.why), `no way to check given: ${r.why}`);
+});
+
+t('a baseline that exits 0 without running tests aborts', () => {
+  // Exit 0 from a command that never ran the suite would make every mutation
+  // look SURVIVED. That is the loudest possible wrong answer, so it aborts.
+  const r = checkBaseline(exec('nothing to do', 0), 'Tests\\s+\\d+');
+  assert(!r.ok, 'a no-op baseline was accepted');
+  assert(/no evidence any test ran/.test(r.why), r.why);
 });
 
 console.log('\nREPORTING');

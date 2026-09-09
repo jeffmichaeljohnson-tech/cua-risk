@@ -24,6 +24,9 @@ import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
+// The mutation currently written to disk, so a caught signal can undo it.
+export let inFlight = null;
+
 export const KILLED = 'KILLED', SURVIVED = 'SURVIVED',
              INCONCLUSIVE = 'INCONCLUSIVE', NOT_APPLIED = 'NOT-APPLIED';
 
@@ -39,13 +42,18 @@ export function runOne(root, spec, exec) {
   }
   let out = '', code = 0;
   try {
-    writeFileSync(file, before.replace(spec.find, spec.replace));
+    // A FUNCTION as the replacement, deliberately. Passing a string lets JS
+    // interpret $&, $`, $', $$ and $1..$9 inside it as substitution patterns,
+    // which silently corrupts any mutation whose replacement contains a dollar
+    // sign -- and a mangled mutation yields a verdict about code nobody wrote.
+    writeFileSync(file, before.replace(spec.find, () => spec.replace));
     const r = exec();
     out = r.out; code = r.code;
   } finally {
     // Restoration is in `finally` and then VERIFIED. A runner that corrupts the
     // tree it is measuring is worse than no runner.
     writeFileSync(file, before);
+    inFlight = null;
     const after = readFileSync(file, 'utf8');
     if (sha(after) !== sha(before)) {
       throw new Error(`FAILED TO RESTORE ${spec.file} — tree is dirty, stop and fix by hand`);
@@ -56,6 +64,28 @@ export function runOne(root, spec, exec) {
     note: ran ? 'suite passed with the mutation in place' : 'exit 0 but no evidence tests ran' };
   return { ...spec, verdict: ran ? KILLED : INCONCLUSIVE,
     note: ran ? 'suite ran and failed' : `exit ${code} with no evidence tests ran — likely a build error` };
+}
+
+/**
+ * The suite must be green BEFORE any mutation is applied.
+ *
+ * Without this every verdict is measured against an unknown baseline. The case
+ * that motivated it: a run was killed mid-mutation, the `finally` never ran, and
+ * the mutated file became the starting point for the next run — where two
+ * mutations then reported NOT-APPLIED because the text they searched for had
+ * already been replaced. A leftover mutation must be loud, not inherited.
+ */
+export function checkBaseline(exec, ran) {
+  const { out, code } = exec();
+  if (code !== 0) {
+    return { ok: false, why: 'the suite does not pass before any mutation is applied — '
+      + 'the tree may carry a leftover mutation from an interrupted run (check `git status`)' };
+  }
+  if (!new RegExp(ran ?? '.').test(out)) {
+    return { ok: false, why: 'the baseline exited 0 but printed no evidence any test ran — '
+      + 'the `ran` marker does not match this runner\'s output' };
+  }
+  return { ok: true };
 }
 
 export function runAll(root, specs, exec) {
@@ -86,6 +116,36 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       return { out: `${e.stdout ?? ''}${e.stderr ?? ''}`, code: e.status ?? 1 };
     }
   };
+  const base = checkBaseline(exec, ran);
+  if (!base.ok) {
+    console.error(`baseline: ${base.why}`);
+    process.exit(2);
+  }
+
+  // Restoration has three layers, because each one has a hole the next covers.
+  //
+  //   1. `finally` in runOne. Does the real work, including when the suite
+  //      throws or the child is interrupted -- measured: a SIGINT delivered
+  //      mid-run leaves the file byte-identical.
+  //   2. These handlers. Best-effort only: `execSync` blocks the event loop, so
+  //      a JS handler cannot fire while a suite is actually running. They cover
+  //      a signal that lands between mutations.
+  //   3. The baseline check above. The one that matters, because SIGKILL cannot
+  //      be caught by anything: it turns the aftermath of an uncatchable kill
+  //      into a loud abort on the next run rather than a silent wrong answer.
+  //
+  // Layer 3 exists because layers 1 and 2 were both defeated in practice: a run
+  // was killed mid-mutation and the leftover silently became the next baseline.
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => {
+      if (inFlight) {
+        try { writeFileSync(inFlight.file, inFlight.before); } catch { /* best effort */ }
+        console.error(`\n${sig}: restored ${inFlight.rel} before exiting`);
+      }
+      process.exit(130);
+    });
+  }
+
   const results = runAll(root, mutations.map((m) => ({ ...m, ran: m.ran ?? ran })), exec);
   console.log(report(results));
   process.exit(results.every((r) => r.verdict === KILLED) ? 0 : 1);
