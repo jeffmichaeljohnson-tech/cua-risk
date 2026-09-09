@@ -9,13 +9,36 @@ field is blocked, not confirmed. A submit tool is `confirm` regardless of what
 its label claims, because the label is attacker-controlled. Reads and navigation
 are auto. Irreversible verbs are confirm.
 
+## Use
+
+Zero dependencies beyond `std`. Build a context from the tool call and session
+state, and classify it before dispatch:
+
+```rust
+use cua_risk::{classify, ActionContext, Tier};
+
+let action = ActionContext {
+    tool: "gui.type",
+    element_label: Some("Enter Password"),
+    element_role: Some("AXTextField"),
+    app_bundle_id: None,
+    allowed_apps: &[],
+};
+assert_eq!(classify(&action), Tier::Blocked); // never autonomous
+```
+
+The full example — desktop and web paths, and the write class a confirm card
+renders — is a runnable doc-test in the crate root, so `cargo test` compiles and
+checks it and it cannot drift from the code.
+
 ## Test
 
 ```
 cargo test
 ```
 
-115 tests, all passing. They are the specification: each names the case it pins.
+121 tests plus the doc example, all passing. They are the specification: each
+names the case it pins.
 
 The property that matters is that neither degenerate classifier can pass. Both
 were measured rather than asserted -- by replacing every entry point with a
@@ -23,8 +46,8 @@ constant and running the suite:
 
 | classifier | result |
 |---|---|
-| block everything | **60 of 115 fail** |
-| approve everything | **76 of 115 fail** |
+| block everything | **65 of 121 fail** |
+| approve everything | **80 of 121 fail** |
 
 So the suite constrains the answer from both sides. An earlier version of this
 paragraph claimed the negative half was deliberately larger than the positive
@@ -191,6 +214,8 @@ escalation — were the only ones the check could not see.
 
 Extracted from a larger application, where it had no coupling to its host: a
 single `use super::*` inside the test module and nothing else. No dependencies
-beyond `std`.
+beyond `std`, no `unsafe` (the crate root `forbid`s it), and it builds on Rust
+1.63 and later — verified by compiling and running the full suite on that
+toolchain, not asserted.
 
 MIT licensed.
