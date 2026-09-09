@@ -658,6 +658,42 @@ mod tests {
         }
     }
 
+    // -- An unrecognised tool must fail CLOSED --
+    //
+    // Found by mutation: flipping the catch-all arm of `base_tier` from
+    // `Tier::Confirm` to `Tier::Auto` left all 72 tests passing. That arm is the
+    // single most consequential line here — it decides what happens to a tool
+    // nobody anticipated — and nothing pinned it. A classifier that auto-approves
+    // what it does not recognise is worse than no classifier, because it reads
+    // as one.
+
+    #[test]
+    fn unknown_tools_default_to_confirm_never_auto() {
+        for tool in &[
+            "gui.frobnicate",
+            "gui.download_file",
+            "shell.exec",
+            "",
+            "gui.click.extra",
+        ] {
+            assert_eq!(
+                classify(&ctx_for(tool)),
+                Tier::Confirm,
+                "unrecognised tool {tool:?} must not be Auto"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_matching_is_case_sensitive_so_casing_is_not_a_bypass() {
+        // "GUI.CLICK" is not "gui.click". If matching were ever loosened to be
+        // case-insensitive, an auto-approved tool name could be reached by
+        // casing alone; this pins that it cannot.
+        assert_eq!(classify(&ctx_for("GUI.CLICK")), Tier::Confirm);
+        assert_eq!(classify(&ctx_for("GUI.SNAPSHOT")), Tier::Confirm);
+        assert_eq!(classify(&ctx_for("gui.snapshot")), Tier::Auto);
+    }
+
     // -- Tier 0 tools are Auto --
 
     #[test]
