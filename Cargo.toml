@@ -2,7 +2,11 @@
 name = "cua-risk"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.63"
 license = "MIT"
-description = "Risk classification for computer-use agent actions."
+description = "Risk classification for computer-use agent actions: returns auto, confirm, or block."
+readme = "README.md"
+keywords = ["security", "computer-use", "agent", "risk", "classifier"]
+categories = ["os::macos-apis"]
 
 [dependencies]
