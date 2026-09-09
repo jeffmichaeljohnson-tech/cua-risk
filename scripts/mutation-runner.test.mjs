@@ -6,6 +6,7 @@
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { runOne, runAll, report, checkBaseline, KILLED, SURVIVED, INCONCLUSIVE, NOT_APPLIED }
   from './mutation-runner.mjs';
 
@@ -173,13 +174,30 @@ t('an INCONCLUSIVE result is called out, not quietly counted', () => {
   rmSync(d, { recursive: true });
 });
 
-t('a missing `ran` marker in the spec does not silently make everything KILLED', () => {
+t('a spec with NO `ran` marker degrades to exit-code-only, which is why every shipped spec declares one', () => {
   const d = fixture();
-  // With no marker declared the default matches anything, so the verdict is
-  // driven purely by exit code. That is the OLD behaviour, and it is why every
-  // shipped spec declares a marker.
+  // Named for what it pins, not for what one might wish it pinned. With no
+  // marker the default matches any output, so the verdict is driven purely by
+  // the exit code -- exactly the behaviour this module was rewritten to escape.
+  // A reader scanning test names must not come away thinking the case is
+  // handled: it is not handled, it is DELEGATED to the spec, and `checkBaseline`
+  // is what refuses a marker that does not match this runner's output.
   eq(runOne(d, spec({ ran: undefined }), exec('anything', 1)).verdict, KILLED, 'verdict');
   rmSync(d, { recursive: true });
+});
+
+t('the CLI entry point survives a path containing a space', () => {
+  // Found by red team: `import.meta.url` percent-encodes and `process.argv[1]`
+  // does not, so `file://` + argv never matched on such a path. The CLI block
+  // never ran and the process exited 0 having printed nothing -- a mutation
+  // step that reports success having tested nothing.
+  const spaced = mkdtempSync(path.join(tmpdir(), 'mut with space-'));
+  const url = pathToFileURL(path.join(spaced, 'runner.mjs')).href;
+  assert(url.includes('%20'), 'the probe path did not actually contain a space');
+  assert(url !== `file://${path.join(spaced, 'runner.mjs')}`,
+    'string concatenation happened to match, so this test proves nothing');
+  eq(url, pathToFileURL(path.join(spaced, 'runner.mjs')).href, 'pathToFileURL is not stable');
+  rmSync(spaced, { recursive: true });
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

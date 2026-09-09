@@ -22,6 +22,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 
 // The mutation currently written to disk, so a caught signal can undo it.
@@ -105,7 +106,12 @@ export function report(results) {
   return lines.join('\n');
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// `pathToFileURL`, not string concatenation. `import.meta.url` percent-encodes;
+// `process.argv[1]` does not, so on any path containing a space -- or any other
+// character a URL escapes -- the two never match, the CLI block never runs, and
+// the process exits 0 having printed nothing. A mutation step that silently
+// passes is the precise failure this file exists to detect.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const root = process.argv[2] ?? '.';
   const specPath = process.argv[3] ?? path.join(root, 'mutations.json');
   const { command, ran, mutations } = JSON.parse(readFileSync(specPath, 'utf8'));

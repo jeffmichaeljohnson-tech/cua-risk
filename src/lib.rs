@@ -345,10 +345,35 @@ pub fn classify_web(ctx: &WebActionContext<'_>) -> WebVerdict {
         };
     }
 
-    // Everything else (navigate/snapshot/scroll/fill/non-committal click) is
-    // reversible under grant.
+    // An UNRECOGNISED tool falls to Confirm, never to Auto.
+    //
+    // This mirrors `base_tier`'s catch-all, and it was missing here. The web
+    // path used to end in a bare `Auto`, so any tool not named above -- a new
+    // `browser_evaluate`, a `browser_download`, a rename of `browser_submit` to
+    // `browser_submitForm`, or the same name in different case -- was
+    // auto-approved. The two entry points disagreed about the most consequential
+    // decision either of them makes.
+    //
+    // The list is the one this function's own doc comment names as reversible.
+    // Adding a tool is a deliberate act; forgetting to add one costs a
+    // confirmation, not a silent action.
+    let reversible = matches!(
+        ctx.tool,
+        "browser_navigate"
+            | "browser_read"
+            | "browser_snapshot"
+            | "browser_scroll"
+            | "browser_click"
+            | "browser_press"
+            | "browser_type"
+    );
+
     WebVerdict {
-        tier: Tier::Auto,
+        tier: if reversible {
+            Tier::Auto
+        } else {
+            Tier::Confirm
+        },
         class: None,
     }
 }
@@ -610,9 +635,16 @@ fn apply_cross_app_escalation(tier: Tier, ctx: &ActionContext<'_>) -> Tier {
         return tier;
     }
 
+    // An UNRESOLVED app escalates, exactly as a non-allowlisted one does.
+    //
+    // This used to `return tier`, which fails open at the worst moment: an agent
+    // that cannot tell which app is frontmost is least sure what it is about to
+    // touch, and was being treated as though it were inside the allowlist. The
+    // allowlist means "these apps are known"; an unknown app is not one of them,
+    // and neither is no app at all.
     let current_app = match ctx.app_bundle_id {
         Some(bid) => bid,
-        None => return tier,
+        None => return escalate_one_level(tier),
     };
 
     let in_allowlist = ctx
@@ -624,7 +656,16 @@ fn apply_cross_app_escalation(tier: Tier, ctx: &ActionContext<'_>) -> Tier {
         return tier;
     }
 
-    // Escalate one level.
+    escalate_one_level(tier)
+}
+
+/// One rung up the ladder, defined once.
+///
+/// This was written out twice — at the unresolved-app return and at the
+/// not-in-allowlist fall-through — which is two places for one decision to drift
+/// apart, and it made the ladder ambiguous to pin: a mutation aimed at it
+/// matched both sites and could be applied to neither.
+fn escalate_one_level(tier: Tier) -> Tier {
     match tier {
         Tier::Auto => Tier::Confirm,
         Tier::Confirm => Tier::Blocked,
@@ -1334,6 +1375,103 @@ mod tests {
     // -----------------------------------------------------------------------
     // classify_web — browser_* irreversibility tier map (grant plane)
     // -----------------------------------------------------------------------
+
+    // -- The web path fails CLOSED, exactly as the gui path does --
+    //
+    // Found by a red team. `classify_web` used to end in a bare `Tier::Auto`, so
+    // any tool it did not name was auto-approved: a new `browser_evaluate`, a
+    // `browser_download`, a rename of `browser_submit`, or the same name in
+    // different case. `base_tier` has had a `_ => Confirm` catch-all all along,
+    // and the README tells the story of pinning it. The other entry point did
+    // the opposite and nothing noticed, because no mutation was ever aimed here.
+
+    #[test]
+    fn unknown_web_tools_default_to_confirm_never_auto() {
+        for tool in &[
+            "browser_evaluate",
+            "browser_run_js",
+            "browser_download",
+            "browser_file_upload",
+            "browser_drag",
+            "browser_select_option",
+            "browser_frobnicate",
+            "shell.exec",
+            "",
+            "gui.type",
+        ] {
+            assert_eq!(
+                classify_web(&web_ctx(tool, None)).tier,
+                Tier::Confirm,
+                "unrecognised web tool {tool:?} must not be Auto"
+            );
+        }
+    }
+
+    #[test]
+    fn web_tool_matching_is_case_sensitive_so_casing_is_not_a_bypass() {
+        // "BROWSER_CLICK" is not "browser_click". If matching were ever loosened
+        // to be case-insensitive, casing alone would reach an auto-approved arm.
+        assert_eq!(
+            classify_web(&web_ctx("BROWSER_CLICK", None)).tier,
+            Tier::Confirm
+        );
+        assert_eq!(
+            classify_web(&web_ctx("Browser_Navigate", None)).tier,
+            Tier::Confirm
+        );
+        assert_eq!(
+            classify_web(&web_ctx("browser_navigate", None)).tier,
+            Tier::Auto
+        );
+    }
+
+    #[test]
+    fn the_reversible_web_tools_are_still_auto() {
+        // The must-not-fire half. A catch-all that swept everything into Confirm
+        // would pass the two tests above and be useless, so this pins the other
+        // direction: the documented reversible set stays Auto.
+        for tool in &[
+            "browser_navigate",
+            "browser_read",
+            "browser_snapshot",
+            "browser_scroll",
+            "browser_click",
+            "browser_press",
+            "browser_type",
+        ] {
+            assert_eq!(
+                classify_web(&web_ctx(tool, None)).tier,
+                Tier::Auto,
+                "reversible web tool {tool:?} should not need a confirmation"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unresolved_app_escalates_rather_than_being_treated_as_allowlisted() {
+        let allow = vec!["com.apple.Safari".to_string()];
+        // The allowlist means "these apps are known". No app at all is not one
+        // of them, and an agent that cannot resolve the frontmost app is exactly
+        // when it is least sure what it is touching.
+        let ctx = ActionContext {
+            tool: "gui.click",
+            element_label: None,
+            element_role: None,
+            app_bundle_id: None,
+            allowed_apps: &allow,
+        };
+        assert_eq!(classify(&ctx), Tier::Confirm);
+
+        // Control: the same action inside the allowlist is not escalated.
+        let known = ActionContext {
+            tool: "gui.click",
+            element_label: None,
+            element_role: None,
+            app_bundle_id: Some("com.apple.Safari"),
+            allowed_apps: &allow,
+        };
+        assert_eq!(classify(&known), Tier::Auto);
+    }
 
     fn web_ctx(tool: &'static str, label: Option<&'static str>) -> WebActionContext<'static> {
         WebActionContext {
