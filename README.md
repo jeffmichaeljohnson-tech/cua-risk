@@ -15,9 +15,20 @@ are auto. Irreversible verbs are confirm.
 cargo test
 ```
 
-74 tests, all passing. They are the specification: each names the case it pins,
-and the negative half is deliberately larger than the positive one, so a
-classifier that simply blocked everything would fail the suite rather than pass it.
+94 tests, all passing. They are the specification: each names the case it pins.
+
+The property that matters is that neither degenerate classifier can pass. Both
+were measured rather than asserted -- by replacing every entry point with a
+constant and running the suite:
+
+| classifier | result |
+|---|---|
+| block everything | **53 of 94 fail** |
+| approve everything | **69 of 94 fail** |
+
+So the suite constrains the answer from both sides. An earlier version of this
+paragraph claimed the negative half was deliberately larger than the positive
+one; that was never measured and it is not true.
 
 ## Mutation
 
@@ -28,7 +39,7 @@ code were wrong. So the mutations are committed rather than described:
 node scripts/mutation-runner.mjs . mutations.json
 ```
 
-`mutations.json` lists seven changes to real logic. The runner applies each one,
+`mutations.json` lists sixteen changes to real logic. The runner applies each one,
 runs the suite, restores the file and verifies the restore by hash. It reports
 four verdicts, and the third is why it exists:
 
@@ -47,9 +58,9 @@ exit without it is `INCONCLUSIVE` — never counted as caught.
 The runner has its own suite (`node scripts/mutation-runner.test.mjs`), because a tool that measures test suites
 is itself a check, and a check nobody has watched fail is a claim.
 
-The seven are dispositions and ladder steps: flipping what an unrecognised tool
-gets, downgrading typing to auto, and disabling each rung of the escalation
-ladder.
+They are dispositions, ladder steps and label handling: flipping what an
+unrecognised tool gets, downgrading typing to auto, disabling each rung of the
+escalation ladder, and removing the label fold described below.
 
 One mutation originally survived, and it was the worst possible one: the
 catch-all branch deciding what happens to a tool nobody anticipated could be
@@ -58,6 +69,32 @@ auto-approves what it does not recognise is worse than no classifier, because it
 reads as one. That branch is now pinned in both directions, and so is the fact
 that tool matching is case-sensitive, so `GUI.CLICK` cannot reach an
 auto-approved branch by casing alone.
+
+## Labels are not ASCII
+
+A label reaches this code from the DOM on the web, and from whatever string an
+application publishes through the accessibility API on the desktop. Both are
+attacker-controlled where it counts, and every marker table here is ASCII.
+
+Measured before it was fixed: `browser_click` on a control labelled `Send`
+returned `Confirm`, and the same click on `Sеnd` -- with U+0435 CYRILLIC SMALL
+LETTER IE, which renders identically -- returned `Auto`. Worse, `browser_type`
+into a field labelled with fullwidth `ＯＴＰ code` returned `Auto` where the ASCII
+spelling is a hard `Blocked`. Because every label rule only ever ESCALATES, a
+missed match fails in the permissive direction and nothing reports it.
+
+`fold_label` now folds three mechanical classes toward ASCII -- fullwidth forms,
+the Cyrillic and Greek letters that render as Latin ones, and non-ASCII spaces
+and dashes -- and deletes zero-width and bidi format characters outright, since
+they render as nothing and would otherwise break a keyword invisibly.
+
+**It is not a UTS #39 confusable skeleton and it is not complete.** No fold is.
+The design therefore never rests on it: `browser_submit` confirms whatever its
+label says, an unrecognised tool defaults to `Confirm`, and the fold only adds
+escalations on top. Both properties are pinned by tests that use a homoglyph the
+fold does not carry. The residual exposure is worth naming rather than hiding: a
+generic `browser_click` or `browser_type` has no tool-name signal, so for those
+the label is the only evidence there is.
 
 ## Status
 

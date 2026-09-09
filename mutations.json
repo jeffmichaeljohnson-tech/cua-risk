@@ -67,6 +67,36 @@
       "file": "src/lib.rs",
       "find": "        None => return escalate_one_level(tier),",
       "replace": "        None => return tier,"
+    },
+    {
+      "name": "the 2FA-field check drops the fold (a fullwidth OTP label stops matching)",
+      "file": "src/lib.rs",
+      "find": "        let l = fold_label(label);\n        if WEB_2FA_MARKERS",
+      "replace": "        let l = label.to_lowercase();\n        if WEB_2FA_MARKERS"
+    },
+    {
+      "name": "the irreversible-verb check drops the fold (a Cyrillic Send stops matching)",
+      "file": "src/lib.rs",
+      "find": "            let l = fold_label(l);\n            WEB_IRREVERSIBLE_VERBS",
+      "replace": "            let l = l.to_lowercase();\n            WEB_IRREVERSIBLE_VERBS"
+    },
+    {
+      "name": "the desktop credential check drops the fold (a Greek omicron in Password)",
+      "file": "src/lib.rs",
+      "find": "        let l = fold_label(label);\n        if l.contains(\"password\") || l.contains(\"credential\")",
+      "replace": "        let l = label.to_lowercase();\n        if l.contains(\"password\") || l.contains(\"credential\")"
+    },
+    {
+      "name": "the fold stops deleting zero-width characters (Se<ZWSP>nd stops matching)",
+      "file": "src/lib.rs",
+      "find": "            | '\\u{feff}' => continue,",
+      "replace": "            | '\\u{feff}' => ' ',"
+    },
+    {
+      "name": "the fold lowercases FIRST, so a fullwidth capital never reaches ASCII",
+      "file": "src/lib.rs",
+      "find": "    out.to_lowercase()\n}",
+      "replace": "    out\n}"
     }
   ]
 }

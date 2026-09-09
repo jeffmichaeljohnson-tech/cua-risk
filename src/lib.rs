@@ -234,7 +234,7 @@ pub fn write_class_for(tool: &str, label: Option<&str>) -> Option<WriteClass> {
 
 pub fn web_write_class(label: Option<&str>) -> Option<WriteClass> {
     let l = match label {
-        Some(l) if !l.trim().is_empty() => l.to_lowercase(),
+        Some(l) if !l.trim().is_empty() => fold_label(l),
         _ => return None,
     };
     if WEB_EMAIL_MARKERS.iter().any(|m| l.contains(m)) {
@@ -267,7 +267,7 @@ const WEB_2FA_MARKERS: &[&str] = &[
 
 fn is_web_2fa_target(ctx: &WebActionContext<'_>) -> bool {
     if let Some(label) = ctx.element_label {
-        let l = label.to_lowercase();
+        let l = fold_label(label);
         if WEB_2FA_MARKERS.iter().any(|m| l.contains(m)) {
             return true;
         }
@@ -278,7 +278,7 @@ fn is_web_2fa_target(ctx: &WebActionContext<'_>) -> bool {
 fn web_label_is_irreversible(label: Option<&str>) -> bool {
     match label {
         Some(l) if !l.trim().is_empty() => {
-            let l = l.to_lowercase();
+            let l = fold_label(l);
             WEB_IRREVERSIBLE_VERBS.iter().any(|v| l.contains(v))
         }
         _ => false,
@@ -393,6 +393,134 @@ fn base_tier(ctx: &ActionContext<'_>) -> Tier {
 }
 
 // ---------------------------------------------------------------------------
+// Label folding
+// ---------------------------------------------------------------------------
+
+/// Fold a free-text label toward ASCII before matching a marker against it.
+///
+/// Every marker table in this file is ASCII. A label is not: on the web it comes
+/// from the DOM, and on the desktop from whatever string an application chooses
+/// to publish through the accessibility API. Both are attacker-controlled in the
+/// case that matters. Plain `to_lowercase` leaves a label that a person reads as
+/// `Send` but that no ASCII marker matches, and because every label rule here
+/// only ever ESCALATES, a missed match silently returns the permissive answer.
+///
+/// Three mechanical classes are folded, each chosen because it has an exact
+/// ASCII equivalent rather than a judgement call:
+///
+///   1. Fullwidth forms (U+FF01..U+FF5E), which map onto ASCII by subtraction.
+///   2. The Cyrillic and Greek letters whose ordinary rendering is
+///      indistinguishable from a Latin letter used by a marker below.
+///   3. Unicode spaces and dashes, so `one-time` still matches when the hyphen
+///      is U+2011 and the space is U+00A0.
+///
+/// Zero-width and bidirectional format characters are DELETED rather than
+/// mapped: they render as nothing, so a human sees `Send` where the bytes say
+/// `Se<ZWSP>nd`, and no marker can match across the break.
+///
+/// **This is not a UTS #39 confusable skeleton, and it is not complete.** The
+/// full table is larger than a zero-dependency crate should carry, and no fold
+/// is ever finished -- a label built around this one can still miss. That is why
+/// nothing here RESTS on the fold: the tool name decides first wherever a tool
+/// name carries the meaning (`browser_submit` confirms whatever its label says),
+/// an unrecognised tool defaults to `Confirm`, and the fold only adds
+/// escalations on top. The residual exposure is real and worth naming: a generic
+/// `browser_click` or `browser_type` carries no tool-name signal, so for those
+/// the label is the only evidence there is.
+fn fold_label(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let folded = match ch {
+            // Zero-width, soft hyphen and bidi format characters: they render as
+            // nothing, so they must not be able to break a keyword.
+            '\u{00ad}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{feff}' => continue,
+
+            // Fullwidth ASCII: an exact one-to-one mapping.
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(ch as u32 - 0xff01 + 0x21).unwrap_or(ch),
+
+            // Spaces that are not U+0020.
+            '\u{00a0}' | '\u{2000}'..='\u{200a}' | '\u{202f}' | '\u{205f}' | '\u{3000}' => ' ',
+
+            // Dashes that are not U+002D.
+            '\u{2010}'..='\u{2015}' | '\u{2212}' | '\u{fe58}' | '\u{fe63}' => '-',
+
+            // Cyrillic letters that render as Latin ones.
+            '\u{0430}' => 'a',
+            '\u{0410}' => 'A',
+            '\u{0432}' => 'b',
+            '\u{0412}' => 'B',
+            '\u{0441}' => 'c',
+            '\u{0421}' => 'C',
+            '\u{0501}' => 'd',
+            '\u{0435}' => 'e',
+            '\u{0415}' => 'E',
+            '\u{04bb}' => 'h',
+            '\u{041d}' => 'H',
+            '\u{0456}' => 'i',
+            '\u{0406}' => 'I',
+            '\u{0458}' => 'j',
+            '\u{0408}' => 'J',
+            '\u{043a}' => 'k',
+            '\u{041a}' => 'K',
+            '\u{043c}' => 'm',
+            '\u{041c}' => 'M',
+            '\u{043e}' => 'o',
+            '\u{041e}' => 'O',
+            '\u{0440}' => 'p',
+            '\u{0420}' => 'P',
+            '\u{051b}' => 'q',
+            '\u{0455}' => 's',
+            '\u{0405}' => 'S',
+            '\u{0442}' => 't',
+            '\u{0422}' => 'T',
+            '\u{0475}' => 'v',
+            '\u{0474}' => 'V',
+            '\u{051d}' => 'w',
+            '\u{0445}' => 'x',
+            '\u{0425}' => 'X',
+            '\u{0443}' => 'y',
+            '\u{0423}' => 'Y',
+
+            // Greek letters that render as Latin ones.
+            '\u{03b1}' => 'a',
+            '\u{0391}' => 'A',
+            '\u{0392}' => 'B',
+            '\u{03b5}' => 'e',
+            '\u{0395}' => 'E',
+            '\u{0397}' => 'H',
+            '\u{03b9}' => 'i',
+            '\u{0399}' => 'I',
+            '\u{03ba}' => 'k',
+            '\u{039a}' => 'K',
+            '\u{039c}' => 'M',
+            '\u{03bd}' => 'v',
+            '\u{039d}' => 'N',
+            '\u{03bf}' => 'o',
+            '\u{039f}' => 'O',
+            '\u{03c1}' => 'p',
+            '\u{03a1}' => 'P',
+            '\u{03c4}' => 't',
+            '\u{03a4}' => 'T',
+            '\u{03c5}' => 'u',
+            '\u{03a5}' => 'Y',
+            '\u{03c7}' => 'x',
+            '\u{03a7}' => 'X',
+            '\u{0396}' => 'Z',
+
+            other => other,
+        };
+        out.push(folded);
+    }
+    // Lowercase LAST: folding first means a fullwidth or Cyrillic capital
+    // reaches the ASCII lowercaser as an ASCII capital.
+    out.to_lowercase()
+}
+
+// ---------------------------------------------------------------------------
 // Label-based tier for gui.click
 // ---------------------------------------------------------------------------
 
@@ -409,7 +537,7 @@ const FILE_OP_LABELS: &[&str] = &["save as", "move to trash", "export"];
 
 fn label_tier(label: Option<&str>) -> Tier {
     let label = match label {
-        Some(l) if !l.trim().is_empty() => l.to_lowercase(),
+        Some(l) if !l.trim().is_empty() => fold_label(l),
         _ => return Tier::Auto,
     };
 
@@ -447,7 +575,7 @@ fn label_tier(label: Option<&str>) -> Tier {
 fn is_credential_target(ctx: &ActionContext<'_>) -> bool {
     // Password/credential field detection by role.
     if let Some(role) = ctx.element_role {
-        let r = role.to_lowercase();
+        let r = fold_label(role);
         if r.contains("securetextfield") || r.contains("password") {
             return true;
         }
@@ -455,7 +583,7 @@ fn is_credential_target(ctx: &ActionContext<'_>) -> bool {
 
     // Password/credential field detection by label.
     if let Some(label) = ctx.element_label {
-        let l = label.to_lowercase();
+        let l = fold_label(label);
         if l.contains("password") || l.contains("credential") || l.contains("passphrase") {
             return true;
         }
@@ -484,7 +612,7 @@ fn is_tier2_context(ctx: &ActionContext<'_>) -> bool {
 
     // Security settings (not credential fields per se, but Tier 2 for gui.*).
     if let Some(label) = ctx.element_label {
-        let l = label.to_lowercase();
+        let l = fold_label(label);
         if l.contains("filevault") || l.contains("firewall") || l.contains("gatekeeper") {
             return true;
         }
@@ -494,7 +622,7 @@ fn is_tier2_context(ctx: &ActionContext<'_>) -> bool {
     if let Some(bid) = ctx.app_bundle_id {
         if is_messaging_app(bid) {
             if let Some(label) = ctx.element_label {
-                let l = label.to_lowercase();
+                let l = fold_label(label);
                 if l.contains("send") || l.contains("post") || l.contains("reply") {
                     return true;
                 }
@@ -579,7 +707,7 @@ pub fn is_sensitive_target(bundle_id: Option<&str>, app_name: Option<&str>) -> b
         }
     }
     if let Some(name) = app_name {
-        let n = name.to_lowercase();
+        let n = fold_label(name);
         if n.contains("1password") || n.contains("keychain access") {
             return true;
         }
@@ -1723,5 +1851,173 @@ mod tests {
         assert_eq!(web_write_class(Some("Checkout")), None);
         assert_eq!(web_write_class(Some("   ")), None);
         assert_eq!(web_write_class(None), None);
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+
+    fn web(tool: &'static str, label: &'static str) -> WebActionContext<'static> {
+        WebActionContext {
+            tool,
+            element_role: None,
+            element_label: Some(label),
+        }
+    }
+
+    fn desk(tool: &'static str, label: &'static str) -> ActionContext<'static> {
+        ActionContext {
+            tool,
+            element_label: Some(label),
+            element_role: None,
+            app_bundle_id: None,
+            allowed_apps: &[],
+        }
+    }
+
+    // -- the reproduced bypasses ------------------------------------------
+
+    #[test]
+    fn cyrillic_e_in_send_still_escalates_a_generic_click() {
+        // U+0435 renders as ASCII 'e'. Before the fold this returned Auto.
+        assert_eq!(
+            classify_web(&web("browser_click", "S\u{0435}nd")).tier,
+            Tier::Confirm
+        );
+        assert_eq!(
+            classify_web(&web("browser_click", "Send")).tier,
+            Tier::Confirm
+        );
+    }
+
+    #[test]
+    fn fullwidth_otp_field_is_still_hard_blocked() {
+        // A hard block, not merely an escalation. Before the fold: Auto.
+        assert_eq!(
+            classify_web(&web("browser_type", "\u{ff2f}\u{ff34}\u{ff30} code")).tier,
+            Tier::Blocked
+        );
+    }
+
+    #[test]
+    fn a_zero_width_space_cannot_break_a_keyword() {
+        assert_eq!(
+            classify_web(&web("browser_click", "Se\u{200b}nd")).tier,
+            Tier::Confirm
+        );
+    }
+
+    #[test]
+    fn a_soft_hyphen_cannot_break_a_keyword() {
+        assert_eq!(
+            classify_web(&web("browser_click", "De\u{00ad}lete")).tier,
+            Tier::Confirm
+        );
+    }
+
+    #[test]
+    fn a_non_breaking_space_and_a_unicode_dash_still_match_one_time() {
+        assert_eq!(
+            classify_web(&web("browser_type", "one\u{2011}time code")).tier,
+            Tier::Blocked
+        );
+    }
+
+    #[test]
+    fn greek_omicron_in_a_password_label_still_hard_blocks_on_the_desktop() {
+        assert_eq!(
+            classify(&desk("gui.type", "Passw\u{03bf}rd")),
+            Tier::Blocked
+        );
+        assert_eq!(classify(&desk("gui.type", "Password")), Tier::Blocked);
+    }
+
+    #[test]
+    fn a_folded_tier2_desktop_label_still_blocks() {
+        assert_eq!(
+            classify(&desk("gui.click", "\u{0415}mpty Trash")),
+            Tier::Blocked
+        );
+    }
+
+    // -- the fold must not INVENT a match ---------------------------------
+
+    #[test]
+    fn an_ordinary_benign_label_is_unaffected() {
+        assert_eq!(
+            classify_web(&web("browser_click", "Cancel")).tier,
+            Tier::Auto
+        );
+        assert_eq!(
+            classify_web(&web("browser_click", "Back to results")).tier,
+            Tier::Auto
+        );
+    }
+
+    #[test]
+    fn folding_does_not_manufacture_a_keyword_from_unrelated_text() {
+        // Cyrillic that does NOT look Latin must pass through untouched, so a
+        // label in another language cannot be folded into an English verb.
+        assert_eq!(
+            classify_web(&web(
+                "browser_click",
+                "\u{0416}\u{0443}\u{0440}\u{043d}\u{0430}\u{043b}"
+            ))
+            .tier,
+            Tier::Auto
+        );
+    }
+
+    #[test]
+    fn a_label_that_merely_contains_a_folded_letter_is_not_escalated() {
+        assert_eq!(
+            classify_web(&web("browser_click", "R\u{0435}ad more")).tier,
+            Tier::Auto
+        );
+    }
+
+    // -- the fold is not what holds the line ------------------------------
+
+    #[test]
+    fn the_tool_name_decides_even_when_the_label_evades_the_fold() {
+        // A homoglyph this table does not carry. The TOOL still confirms, which
+        // is the property that must not depend on the fold being complete.
+        assert_eq!(
+            classify_web(&web("browser_submit", "\u{a4d0}\u{a4f4}nd")).tier,
+            Tier::Confirm
+        );
+    }
+
+    #[test]
+    fn an_unrecognised_web_tool_still_defaults_to_confirm() {
+        assert_eq!(
+            classify_web(&web("browser_evaluate", "anything")).tier,
+            Tier::Confirm
+        );
+    }
+
+    // -- fold_label directly ----------------------------------------------
+
+    #[test]
+    fn fold_label_maps_fullwidth_to_ascii_and_lowercases_after() {
+        assert_eq!(fold_label("\u{ff33}\u{ff25}\u{ff2e}\u{ff24}"), "send");
+    }
+
+    #[test]
+    fn fold_label_leaves_plain_ascii_alone_apart_from_case() {
+        assert_eq!(fold_label("Send Now"), "send now");
+    }
+
+    #[test]
+    fn fold_label_deletes_rather_than_maps_zero_width_characters() {
+        assert_eq!(fold_label("a\u{200b}b"), "ab");
+        assert_eq!(fold_label("a\u{feff}b"), "ab");
+    }
+
+    #[test]
+    fn fold_label_is_idempotent() {
+        let once = fold_label("S\u{0435}\u{200b}nd\u{2011}now");
+        assert_eq!(fold_label(&once), once);
     }
 }
