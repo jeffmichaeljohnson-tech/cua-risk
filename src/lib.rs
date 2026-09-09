@@ -228,7 +228,8 @@ const WEB_DOCUMENT_MARKERS: &[&str] = &["submit", "save", "upload", "create", "u
 /// Every path that needs a class calls THIS. If a new tool earns a floor, it
 /// earns it here, once.
 pub fn write_class_for(tool: &str, label: Option<&str>) -> Option<WriteClass> {
-    web_write_class(label).or_else(|| (tool == "browser_submit").then_some(WriteClass::DocumentWrite))
+    web_write_class(label)
+        .or_else(|| (tool == "browser_submit").then_some(WriteClass::DocumentWrite))
 }
 
 pub fn web_write_class(label: Option<&str>) -> Option<WriteClass> {
@@ -336,9 +337,8 @@ pub fn classify_web(ctx: &WebActionContext<'_>) -> WebVerdict {
         // browser_submit (no label, or a label that names no kind) is a
         // form/document write by construction, so it floors at DocumentWrite
         // rather than leaving the card with a nameless "confirm".
-        let class = web_write_class(ctx.element_label).or_else(|| {
-            (ctx.tool == "browser_submit").then_some(WriteClass::DocumentWrite)
-        });
+        let class = web_write_class(ctx.element_label)
+            .or_else(|| (ctx.tool == "browser_submit").then_some(WriteClass::DocumentWrite));
         return WebVerdict {
             tier: Tier::Confirm,
             class,
@@ -1351,7 +1351,11 @@ mod tests {
             "browser_read",
             "browser_scroll",
         ] {
-            assert_eq!(classify_web(&web_ctx(tool, None)).tier, Tier::Auto, "tool {tool}");
+            assert_eq!(
+                classify_web(&web_ctx(tool, None)).tier,
+                Tier::Auto,
+                "tool {tool}"
+            );
         }
     }
 
@@ -1566,9 +1570,18 @@ mod tests {
     fn web_write_class_helper_maps_representatives_and_none() {
         // The class function is the ONE source both the advisory and managed
         // paths call; pin it directly so a marker-table edit is caught here.
-        assert_eq!(web_write_class(Some("Submit")), Some(WriteClass::DocumentWrite));
-        assert_eq!(web_write_class(Some("Publish Article")), Some(WriteClass::SocialPost));
-        assert_eq!(web_write_class(Some("Send Email")), Some(WriteClass::EmailSend));
+        assert_eq!(
+            web_write_class(Some("Submit")),
+            Some(WriteClass::DocumentWrite)
+        );
+        assert_eq!(
+            web_write_class(Some("Publish Article")),
+            Some(WriteClass::SocialPost)
+        );
+        assert_eq!(
+            web_write_class(Some("Send Email")),
+            Some(WriteClass::EmailSend)
+        );
         assert_eq!(web_write_class(Some("Checkout")), None);
         assert_eq!(web_write_class(Some("   ")), None);
         assert_eq!(web_write_class(None), None);
