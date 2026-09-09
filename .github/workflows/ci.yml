@@ -17,3 +17,12 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: format
         run: cargo fmt --check
+      # The mutation runner is language-agnostic -- it substitutes text and runs
+      # a command -- so it needs a JS runtime even though the crate does not.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: the mutation runner's own suite
+        run: node scripts/mutation-runner.test.mjs
+      - name: mutation
+        run: node scripts/mutation-runner.mjs . mutations.json

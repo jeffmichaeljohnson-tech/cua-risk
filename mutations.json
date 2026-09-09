@@ -1,0 +1,25 @@
+{
+  "command": "cargo test",
+  "ran": "test result: (ok|FAILED)",
+  "mutations": [
+    { "name": "an unrecognised tool defaults to Auto instead of Confirm", "file": "src/lib.rs",
+      "find": "        _ => Tier::Confirm, // unknown tools default to confirm",
+      "replace": "        _ => Tier::Auto, // unknown tools default to confirm" },
+    { "name": "an unrecognised tool defaults to Blocked (over-strict)", "file": "src/lib.rs",
+      "find": "        _ => Tier::Confirm, // unknown tools default to confirm",
+      "replace": "        _ => Tier::Blocked, // unknown tools default to confirm" },
+    { "name": "gui.type and gui.key downgraded to Auto", "file": "src/lib.rs",
+      "find": "        \"gui.type\" | \"gui.key\" => Tier::Confirm,",
+      "replace": "        \"gui.type\" | \"gui.key\" => Tier::Auto," },
+    { "name": "gui.click upgraded to Confirm", "file": "src/lib.rs",
+      "find": "        \"gui.click\" => Tier::Auto, // escalated dynamically by label",
+      "replace": "        \"gui.click\" => Tier::Confirm, // escalated dynamically by label" },
+    { "name": "case-insensitive tool matching becomes a bypass", "file": "src/lib.rs",
+      "find": "        \"gui.click\" => Tier::Auto, // escalated dynamically by label",
+      "replace": "        \"gui.click\" | \"GUI.CLICK\" => Tier::Auto, // escalated dynamically by label" },
+    { "name": "the escalation ladder no longer lifts Auto to Confirm", "file": "src/lib.rs",
+      "find": "        Tier::Auto => Tier::Confirm,", "replace": "        Tier::Auto => Tier::Auto," },
+    { "name": "the escalation ladder no longer lifts Confirm to Blocked", "file": "src/lib.rs",
+      "find": "        Tier::Confirm => Tier::Blocked,", "replace": "        Tier::Confirm => Tier::Confirm," }
+  ]
+}

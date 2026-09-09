@@ -1,0 +1,148 @@
+#!/usr/bin/env node
+// Tests for mutation-runner. The tool measures other suites, so its own
+// failure modes are the point: a false KILLED inflates a score, and a failed
+// restore corrupts the tree it was measuring.
+
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { runOne, runAll, report, KILLED, SURVIVED, INCONCLUSIVE, NOT_APPLIED }
+  from './mutation-runner.mjs';
+
+let pass = 0, fail = 0;
+const t = (name, fn) => {
+  try { fn(); console.log(`  ok    ${name}`); pass++; }
+  catch (e) { console.log(`  FAIL  ${name}\n        ${e.message}`); fail++; }
+};
+const assert = (c, m) => { if (!c) throw new Error(m); };
+const eq = (a, b, m) => assert(a === b, `${m}: expected ${b}, got ${a}`);
+
+const SRC = 'const LIMIT = 10;\nexport const f = (n) => n < LIMIT;\n';
+function fixture() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'mut-'));
+  writeFileSync(path.join(dir, 'a.js'), SRC);
+  return dir;
+}
+const spec = (over = {}) => ({
+  name: 'LIMIT 10 -> 20', file: 'a.js',
+  find: 'const LIMIT = 10;', replace: 'const LIMIT = 20;',
+  ran: 'Tests\\s+\\d+', ...over,
+});
+const exec = (out, code) => () => ({ out, code });
+
+console.log('\nVERDICTS');
+
+t('a suite that ran and failed is KILLED', () => {
+  const d = fixture();
+  eq(runOne(d, spec(), exec('Tests  9 passed | 1 failed', 1)).verdict, KILLED, 'verdict');
+  rmSync(d, { recursive: true });
+});
+
+t('a suite that ran and passed is SURVIVED', () => {
+  const d = fixture();
+  eq(runOne(d, spec(), exec('Tests  10 passed', 0)).verdict, SURVIVED, 'verdict');
+  rmSync(d, { recursive: true });
+});
+
+t('a BUILD ERROR is INCONCLUSIVE, never KILLED — the defect this tool exists for', () => {
+  const d = fixture();
+  // Non-zero exit, but the runner never printed evidence that tests executed.
+  // A runner reading only the exit code scores this as a kill it never earned.
+  const r = runOne(d, spec(), exec('error TS2304: Cannot find name.\n', 2));
+  eq(r.verdict, INCONCLUSIVE, 'verdict');
+  assert(/no evidence tests ran/.test(r.note), `note did not explain: ${r.note}`);
+  rmSync(d, { recursive: true });
+});
+
+t('exit 0 with no evidence of tests is INCONCLUSIVE, not SURVIVED', () => {
+  const d = fixture();
+  eq(runOne(d, spec(), exec('nothing to do\n', 0)).verdict, INCONCLUSIVE, 'verdict');
+  rmSync(d, { recursive: true });
+});
+
+console.log('\nAPPLICATION');
+
+t('a pattern that is absent is NOT-APPLIED, not SURVIVED', () => {
+  const d = fixture();
+  const r = runOne(d, spec({ find: 'const NOPE = 1;' }), exec('Tests  10 passed', 0));
+  eq(r.verdict, NOT_APPLIED, 'verdict');
+  assert(/occurs 0x/.test(r.note), r.note);
+  rmSync(d, { recursive: true });
+});
+
+t('an AMBIGUOUS pattern is NOT-APPLIED — two sites is not one mutation', () => {
+  const d = fixture();
+  writeFileSync(path.join(d, 'a.js'), SRC + SRC);
+  const r = runOne(d, spec(), exec('Tests  10 passed', 0));
+  eq(r.verdict, NOT_APPLIED, 'verdict');
+  assert(/occurs 2x/.test(r.note), r.note);
+  rmSync(d, { recursive: true });
+});
+
+t('the mutation is genuinely in the file while the command runs', () => {
+  const d = fixture();
+  let seen = null;
+  runOne(d, spec(), () => {
+    seen = readFileSync(path.join(d, 'a.js'), 'utf8');
+    return { out: 'Tests  1 failed', code: 1 };
+  });
+  assert(seen.includes('LIMIT = 20'), 'the command saw the UNMUTATED file');
+  rmSync(d, { recursive: true });
+});
+
+console.log('\nRESTORATION');
+
+t('the file is byte-identical after a run', () => {
+  const d = fixture();
+  runOne(d, spec(), exec('Tests  1 failed', 1));
+  eq(readFileSync(path.join(d, 'a.js'), 'utf8'), SRC, 'content');
+  rmSync(d, { recursive: true });
+});
+
+t('the file is restored even when the command THROWS', () => {
+  const d = fixture();
+  let threw = false;
+  try {
+    runOne(d, spec(), () => { throw new Error('runner exploded'); });
+  } catch { threw = true; }
+  assert(threw, 'the throw was swallowed');
+  eq(readFileSync(path.join(d, 'a.js'), 'utf8'), SRC, 'content after a throw');
+  rmSync(d, { recursive: true });
+});
+
+t('a NOT-APPLIED mutation leaves the file untouched', () => {
+  const d = fixture();
+  runOne(d, spec({ find: 'absent' }), exec('Tests  1 passed', 0));
+  eq(readFileSync(path.join(d, 'a.js'), 'utf8'), SRC, 'content');
+  rmSync(d, { recursive: true });
+});
+
+console.log('\nREPORTING');
+
+t('the report counts every verdict and names the total', () => {
+  const d = fixture();
+  const rs = runAll(d, [spec(), spec({ name: 'b' }), spec({ name: 'c', find: 'absent' })],
+    exec('Tests  1 failed', 1));
+  const out = report(rs);
+  assert(/2 killed, 0 survived, 0 inconclusive, 1 not applied \(of 3\)/.test(out), out);
+  rmSync(d, { recursive: true });
+});
+
+t('an INCONCLUSIVE result is called out, not quietly counted', () => {
+  const d = fixture();
+  const out = report(runAll(d, [spec()], exec('build failed', 2)));
+  assert(/INCONCLUSIVE is not a pass/.test(out), out);
+  rmSync(d, { recursive: true });
+});
+
+t('a missing `ran` marker in the spec does not silently make everything KILLED', () => {
+  const d = fixture();
+  // With no marker declared the default matches anything, so the verdict is
+  // driven purely by exit code. That is the OLD behaviour, and it is why every
+  // shipped spec declares a marker.
+  eq(runOne(d, spec({ ran: undefined }), exec('anything', 1)).verdict, KILLED, 'verdict');
+  rmSync(d, { recursive: true });
+});
+
+console.log(`\n${pass} passed, ${fail} failed\n`);
+process.exit(fail ? 1 : 0);
