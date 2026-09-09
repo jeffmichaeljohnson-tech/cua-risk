@@ -126,7 +126,7 @@ pub fn classify(ctx: &ActionContext<'_>) -> Tier {
     // Same rule as the web path, for the same reason: an accessibility label is
     // whatever string the frontmost application chose to publish. A label with
     // the shape of a spoof is raised to at least Confirm -- never lowered.
-    let effective = if label_is_suspicious(ctx.element_label) {
+    let effective = if action_is_spoof_shaped(ctx.element_label, ctx.element_role) {
         max_tier(effective, Tier::Confirm)
     } else {
         effective
@@ -387,7 +387,7 @@ pub fn classify_web(ctx: &WebActionContext<'_>) -> WebVerdict {
     // This is the arm that makes the fold's completeness stop being
     // load-bearing: a mixed-script label escalates here whether or not
     // `fold_label` happens to know the codepoint that was swapped in.
-    let tier = if reversible && !label_is_suspicious(ctx.element_label) {
+    let tier = if reversible && !action_is_spoof_shaped(ctx.element_label, ctx.element_role) {
         Tier::Auto
     } else {
         Tier::Confirm
@@ -554,6 +554,20 @@ fn is_latin_confusable_script(c: char) -> bool {
 /// A suspicious label never lowers a tier -- it can only raise `Auto` to
 /// `Confirm`, which costs one human glance at a label the classifier is telling
 /// you it could not read with confidence.
+/// Either of the two attacker-authored strings having the shape of a spoof is
+/// enough to withhold the permissive answer.
+///
+/// The ROLE is here because leaving it out was a real gap, and a mutation is what
+/// surfaced it: `is_credential_target` folds the role before matching
+/// `securetextfield`, but no test pinned that fold and the detector never looked
+/// at the role at all. On the web the role is the DOM's `role` attribute -- as
+/// page-authored as the label, and it gates a hard BLOCK rather than an
+/// escalation. A legitimate role is always plain ASCII, so this direction costs
+/// nothing.
+fn action_is_spoof_shaped(label: Option<&str>, role: Option<&str>) -> bool {
+    label_is_suspicious(label) || label_is_suspicious(role)
+}
+
 fn label_is_suspicious(label: Option<&str>) -> bool {
     let label = match label {
         Some(l) if !l.trim().is_empty() => l,
@@ -768,37 +782,51 @@ fn label_tier(label: Option<&str>) -> Tier {
 /// Detects whether the focused element is a credential/password/payment/sudo
 /// field, by role or label. Shared by [`is_tier2_context`] (for general gui.*
 /// gating) and [`classify_dictation`] (for dictation safety blocks).
+/// Accessibility ROLES that name a secret-bearing field outright.
+const CREDENTIAL_ROLES: &[&str] = &["securetextfield", "password"];
+
+/// Label markers for a credential field.
+const CREDENTIAL_MARKERS: &[&str] = &["password", "credential", "passphrase"];
+
+/// Label markers for a payment field.
+const PAYMENT_MARKERS: &[&str] = &["credit card", "card number", "cvv", "payment"];
+
+/// Label markers for an authorisation prompt.
+const SUDO_MARKERS: &[&str] = &["sudo", "administrator password"];
+
+/// Is this action pointed at a credential, payment or authorisation field?
+///
+/// The markers were inline string literals until they were lifted here. That was
+/// not tidying: five other marker tables in this file are consts, and
+/// `every_letter_a_marker_depends_on_is_accounted_for` derives its alphabet from
+/// the consts. So the tables the fold most needs to protect -- the ones behind a
+/// hard BLOCK rather than an escalation -- were the only ones that test could not
+/// see. Being a const is what puts a marker under that check.
 fn is_credential_target(ctx: &ActionContext<'_>) -> bool {
-    // Password/credential field detection by role.
     if let Some(role) = ctx.element_role {
         let r = fold_label(role);
-        if r.contains("securetextfield") || r.contains("password") {
+        if CREDENTIAL_ROLES.iter().any(|m| r.contains(m)) {
             return true;
         }
     }
 
-    // Password/credential field detection by label.
     if let Some(label) = ctx.element_label {
         let l = fold_label(label);
-        if l.contains("password") || l.contains("credential") || l.contains("passphrase") {
-            return true;
-        }
-        // Payment field.
-        if l.contains("credit card")
-            || l.contains("card number")
-            || l.contains("cvv")
-            || l.contains("payment")
-        {
-            return true;
-        }
-        // Sudo prompt.
-        if l.contains("sudo") || l.contains("administrator password") {
-            return true;
-        }
+        return CREDENTIAL_MARKERS
+            .iter()
+            .chain(PAYMENT_MARKERS)
+            .chain(SUDO_MARKERS)
+            .any(|m| l.contains(m));
     }
 
     false
 }
+
+/// Label markers for a system security setting.
+const SECURITY_SETTING_MARKERS: &[&str] = &["filevault", "firewall", "gatekeeper"];
+
+/// Label markers for sending inside a messaging app.
+const MESSAGING_MARKERS: &[&str] = &["send", "post", "reply"];
 
 fn is_tier2_context(ctx: &ActionContext<'_>) -> bool {
     // Credential / secure field detection (shared helper).
@@ -809,7 +837,7 @@ fn is_tier2_context(ctx: &ActionContext<'_>) -> bool {
     // Security settings (not credential fields per se, but Tier 2 for gui.*).
     if let Some(label) = ctx.element_label {
         let l = fold_label(label);
-        if l.contains("filevault") || l.contains("firewall") || l.contains("gatekeeper") {
+        if SECURITY_SETTING_MARKERS.iter().any(|m| l.contains(m)) {
             return true;
         }
     }
@@ -819,7 +847,7 @@ fn is_tier2_context(ctx: &ActionContext<'_>) -> bool {
         if is_messaging_app(bid) {
             if let Some(label) = ctx.element_label {
                 let l = fold_label(label);
-                if l.contains("send") || l.contains("post") || l.contains("reply") {
+                if MESSAGING_MARKERS.iter().any(|m| l.contains(m)) {
                     return true;
                 }
             }
@@ -2435,6 +2463,42 @@ mod spoof_shape_tests {
     }
 
     #[test]
+    fn a_spoofed_role_is_caught_the_same_way_a_spoofed_label_is() {
+        // The role is the DOM's `role` attribute on the web -- as page-authored
+        // as the label, and it gates a hard BLOCK. A mutation dropping the fold
+        // from the role check SURVIVED until these two existed.
+        let cred = |role: &'static str| WebActionContext {
+            tool: "browser_type",
+            element_role: Some(role),
+            element_label: Some("Card"),
+        };
+        assert_eq!(classify_web(&cred("securetextfield")).tier, Tier::Blocked);
+        // Cyrillic е inside the role name: folds back, so it still blocks.
+        assert_eq!(
+            classify_web(&cred("securet\u{0435}xtfield")).tier,
+            Tier::Blocked
+        );
+        // And a role the fold does NOT know still refuses the permissive answer,
+        // because the shape alone is enough.
+        assert_ne!(
+            classify_web(&WebActionContext {
+                tool: "browser_click",
+                element_role: Some("butt\u{a64b}n"),
+                element_label: Some("Next"),
+            })
+            .tier,
+            Tier::Auto
+        );
+    }
+
+    #[test]
+    fn an_ordinary_ascii_role_is_never_treated_as_spoofed() {
+        for role in ["button", "textfield", "AXButton", "link", "checkbox"] {
+            assert!(!label_is_suspicious(Some(role)), "fired on {role:?}");
+        }
+    }
+
+    #[test]
     fn an_empty_or_absent_label_is_not_suspicious() {
         assert!(!label_is_suspicious(None));
         assert!(!label_is_suspicious(Some("")));
@@ -2494,6 +2558,16 @@ mod spoof_shape_tests {
             ACTION_VERBS,
             TIER2_LABELS,
             FILE_OP_LABELS,
+            // The hard-block tables. These are the reason the markers were
+            // lifted out of the function bodies: a BLOCK is the most
+            // consequential answer this crate gives, and its markers were the
+            // only ones this check could not see.
+            CREDENTIAL_ROLES,
+            CREDENTIAL_MARKERS,
+            PAYMENT_MARKERS,
+            SUDO_MARKERS,
+            SECURITY_SETTING_MARKERS,
+            MESSAGING_MARKERS,
         ] {
             for marker in table {
                 for c in marker.chars().filter(|c| c.is_ascii_alphabetic()) {
@@ -2506,10 +2580,26 @@ mod spoof_shape_tests {
 
     #[test]
     fn every_letter_a_marker_depends_on_is_accounted_for() {
-        // Derived from the marker tables rather than hand-listed, so adding a
-        // marker that leans on a letter this fold cannot normalise fails HERE
-        // rather than in the field.
-        for letter in marker_alphabet() {
+        // Derived from the marker tables rather than hand-listed. What it proves
+        // is a coverage CLAIM: every letter the markers actually depend on is
+        // either folded from a documented look-alike, or explicitly declared to
+        // have none in Cyrillic and Greek.
+        let alphabet = marker_alphabet();
+
+        // The control, and it is not decoration. A derivation that read nothing
+        // -- a renamed const, a filter that excludes everything -- would iterate
+        // an empty set and pass, which is the exact shape of a sweep that
+        // scanned zero files and reported no findings. Assert the derivation
+        // actually reached the tables before trusting anything it says.
+        assert!(
+            alphabet.len() >= 20,
+            "the marker alphabet came back with only {} letters, which means the \
+             derivation stopped reading the tables rather than that the tables \
+             shrank: {alphabet:?}",
+            alphabet.len()
+        );
+
+        for letter in alphabet {
             match look_alike(letter) {
                 Some(k) => assert_eq!(
                     fold_label(&k.to_string()),

@@ -83,8 +83,8 @@
     {
       "name": "the desktop credential check drops the fold (a Greek omicron in Password)",
       "file": "src/lib.rs",
-      "find": "        let l = fold_label(label);\n        if l.contains(\"password\") || l.contains(\"credential\")",
-      "replace": "        let l = label.to_lowercase();\n        if l.contains(\"password\") || l.contains(\"credential\")"
+      "find": "        let l = fold_label(label);\n        return CREDENTIAL_MARKERS",
+      "replace": "        let l = label.to_lowercase();\n        return CREDENTIAL_MARKERS"
     },
     {
       "name": "the fold stops deleting zero-width characters (Se<ZWSP>nd stops matching)",
@@ -101,7 +101,7 @@
     {
       "name": "the web path stops asking whether the label is spoof-shaped",
       "file": "src/lib.rs",
-      "find": "    let tier = if reversible && !label_is_suspicious(ctx.element_label) {",
+      "find": "    let tier = if reversible && !action_is_spoof_shaped(ctx.element_label, ctx.element_role) {",
       "replace": "    let tier = if reversible {"
     },
     {
@@ -139,6 +139,18 @@
       "file": "src/lib.rs",
       "find": "        '\\u{0370}'..='\\u{03ff}'     // Greek and Coptic",
       "replace": "        '\\u{0370}'..='\\u{9fff}' // Greek and Coptic"
+    },
+    {
+      "name": "the credential ROLE check drops the fold",
+      "file": "src/lib.rs",
+      "find": "        let r = fold_label(role);",
+      "replace": "        let r = role.to_lowercase();"
+    },
+    {
+      "name": "the spoof-shape check stops reading the element role",
+      "file": "src/lib.rs",
+      "find": "    label_is_suspicious(label) || label_is_suspicious(role)",
+      "replace": "    label_is_suspicious(label)"
     }
   ]
 }

@@ -15,7 +15,7 @@ are auto. Irreversible verbs are confirm.
 cargo test
 ```
 
-113 tests, all passing. They are the specification: each names the case it pins.
+115 tests, all passing. They are the specification: each names the case it pins.
 
 The property that matters is that neither degenerate classifier can pass. Both
 were measured rather than asserted -- by replacing every entry point with a
@@ -23,8 +23,8 @@ constant and running the suite:
 
 | classifier | result |
 |---|---|
-| block everything | **60 of 113 fail** |
-| approve everything | **75 of 113 fail** |
+| block everything | **60 of 115 fail** |
+| approve everything | **76 of 115 fail** |
 
 So the suite constrains the answer from both sides. An earlier version of this
 paragraph claimed the negative half was deliberately larger than the positive
@@ -39,7 +39,7 @@ code were wrong. So the mutations are committed rather than described:
 node scripts/mutation-runner.mjs . mutations.json
 ```
 
-`mutations.json` lists twenty-three changes to real logic. The runner applies each one,
+`mutations.json` lists twenty-five changes to real logic. The runner applies each one,
 runs the suite, restores the file and verifies the restore by hash. It reports
 four verdicts, and the third is why it exists:
 
@@ -125,6 +125,13 @@ because folding is what erases the evidence — and asks a question that needs n
 table: *does an ASCII letter sit directly against a Cyrillic or Greek letter, or
 against an invisible character?*
 
+It reads the element's ROLE the same way. On the web that is the DOM's `role`
+attribute, as page-authored as the label, and it gates a hard `Blocked` rather
+than an escalation. Leaving it out was a real gap and a mutation is what surfaced
+it: `is_credential_target` folds the role before matching `securetextfield`, but
+no test pinned that fold, so the mutation removing it SURVIVED. A legitimate role
+is always plain ASCII, so reading it costs nothing.
+
 That is the shape of every mixed-script spoof, whether or not the fold knows the
 particular codepoint. The two mechanisms are complementary by construction:
 
@@ -163,10 +170,22 @@ confirms whatever its label says), and an unrecognised tool defaults to
 `every_letter_a_marker_depends_on_is_accounted_for` derives its alphabet from the
 marker tables themselves, then requires every letter to have either a folded
 look-alike fixture or an explicit declaration that Cyrillic and Greek offer none.
-Add a marker that leans on a letter this fold cannot normalise and the test fails
-naming the letter and what to do about it, rather than the gap surfacing in the
-field. A companion test keeps the exemption list honest, so it cannot become a
-place to hide letters.
+Remove a fixture and it fails naming the letter and what to do about it. A
+companion test keeps the exemption list honest, so it cannot become a place to
+hide letters.
+
+It carries a control, and the control is not decoration: a derivation that read
+nothing — a renamed const, a filter that excludes everything — would iterate an
+empty set and pass, which is the exact shape of a sweep that scanned zero files
+and reported no findings. The test asserts the alphabet actually came back before
+trusting anything it says, and that assertion was driven red by breaking the
+derivation on purpose.
+
+Getting the hard-block markers under that check is why `password`, `cvv`, `sudo`,
+`filevault` and the rest were lifted out of the function bodies into consts. Five
+marker tables were already consts and these were inline literals, so the tables
+behind the most consequential answer this crate gives — a BLOCK, not an
+escalation — were the only ones the check could not see.
 
 ## Status
 
