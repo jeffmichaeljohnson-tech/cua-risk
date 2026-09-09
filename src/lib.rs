@@ -2118,6 +2118,144 @@ mod tests {
         assert_eq!(web_write_class(Some("   ")), None);
         assert_eq!(web_write_class(None), None);
     }
+
+    // -----------------------------------------------------------------------
+    // write_class_for — the tool-AND-label rule, pinned directly.
+    //
+    // It is the exported single source of truth for the class and was the ONLY
+    // exported function with no direct test: `classify_web` now calls it, but a
+    // caller reaching for it in isolation (a confirm card re-deriving the noun
+    // from a stored tool+label) is exercising an untested contract. These pin
+    // the two halves the doc comment promises: the label decides when it names a
+    // kind, and a bare browser_submit floors at DocumentWrite when it does not.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn write_class_for_derives_the_class_including_the_submit_floor() {
+        // The label names the kind, tool notwithstanding.
+        assert_eq!(
+            write_class_for("browser_click", Some("Send Email")),
+            Some(WriteClass::EmailSend)
+        );
+        assert_eq!(
+            write_class_for("browser_click", Some("Publish Article")),
+            Some(WriteClass::SocialPost)
+        );
+        assert_eq!(
+            write_class_for("browser_click", Some("Submit Form")),
+            Some(WriteClass::DocumentWrite)
+        );
+        // No label, non-submit tool: nothing to name.
+        assert_eq!(write_class_for("browser_click", None), None);
+        // The floor: browser_submit is a document write even with no label, and
+        // even when the label names no recognisable kind.
+        assert_eq!(
+            write_class_for("browser_submit", None),
+            Some(WriteClass::DocumentWrite)
+        );
+        assert_eq!(
+            write_class_for("browser_submit", Some("Checkout")),
+            Some(WriteClass::DocumentWrite)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The two entry points diverge on purpose, and the divergence was unpinned.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dictation_does_not_apply_cross_app_escalation() {
+        // classify() escalates an action in a non-allowlisted app; dictation
+        // does NOT, because the user explicitly invoked it at the focused field.
+        // Nothing pinned that difference, so a copy-paste of the cross-app rule
+        // into classify_dictation would have passed the whole suite.
+        let allowed = vec!["com.apple.TextEdit".to_string()];
+        let ctx = ActionContext {
+            tool: "gui.dictate",
+            element_label: None,
+            element_role: Some("AXTextArea"),
+            app_bundle_id: Some("com.apple.Notes"), // NOT in the allowlist
+            allowed_apps: &allowed,
+        };
+        assert_eq!(classify_dictation(&ctx), Tier::Auto);
+
+        // Control: the SAME context through the generic classify() escalates —
+        // all the way to Blocked here, since "gui.dictate" is an unknown tool to
+        // classify() (Confirm base) and a non-allowlisted app lifts it one rung.
+        // That divergence is exactly what this test pins: dictation stays Auto
+        // where classify() would not.
+        assert_eq!(classify(&ctx), Tier::Blocked);
+    }
+
+    #[test]
+    fn dictation_with_all_context_absent_is_auto() {
+        // The fully degenerate input: no label, no role, no app. Dictation into
+        // an unknown focused field is the low-friction default, so it is Auto —
+        // the hard blocks above are the only things that lift it.
+        let ctx = ActionContext {
+            tool: "gui.dictate",
+            element_label: None,
+            element_role: None,
+            app_bundle_id: None,
+            allowed_apps: &[],
+        };
+        assert_eq!(classify_dictation(&ctx), Tier::Auto);
+    }
+
+    // -----------------------------------------------------------------------
+    // Messaging detection has a substring heuristic beside the exact-id list,
+    // and only the exact list was covered.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn messaging_app_detected_by_bundle_substring_is_tier2() {
+        // "com.example.groupchat" is in no exact table, but the heuristic reads
+        // the "chat" substring and treats a "Send" click as messaging → Blocked.
+        let chat = ActionContext {
+            tool: "gui.click",
+            element_label: Some("Send"),
+            element_role: Some("button"),
+            app_bundle_id: Some("com.example.groupchat"),
+            allowed_apps: &[],
+        };
+        assert_eq!(classify(&chat), Tier::Blocked);
+
+        // Control: an app the heuristic does NOT match takes the ordinary path,
+        // where "Send" is an action verb → Confirm, not Blocked. This is what
+        // shows the heuristic (not the label) produced the block above.
+        let plain = ActionContext {
+            tool: "gui.click",
+            element_label: Some("Send"),
+            element_role: Some("button"),
+            app_bundle_id: Some("com.example.notepad"),
+            allowed_apps: &[],
+        };
+        assert_eq!(classify(&plain), Tier::Confirm);
+    }
+
+    // -----------------------------------------------------------------------
+    // Degenerate web input: a submit tool whose label is only whitespace.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn web_submit_with_whitespace_label_still_floors_at_document_write() {
+        // A whitespace-only label names no verb (it trims to empty), but the
+        // tool is browser_submit, so the verdict is Confirm + DocumentWrite by
+        // construction rather than a nameless confirm.
+        let v = classify_web(&web_ctx("browser_submit", Some("   ")));
+        assert_eq!(v.tier, Tier::Confirm);
+        assert_eq!(v.class, Some(WriteClass::DocumentWrite));
+    }
+
+    #[test]
+    fn an_unknown_web_tool_confirms_with_no_write_class() {
+        // The fail-closed default is Confirm, and it must NOT fabricate a write
+        // class: the card falls back to generic phrasing rather than naming a
+        // kind the classifier never read.
+        let v = classify_web(&web_ctx("browser_evaluate", Some("Send Email")));
+        assert_eq!(v.tier, Tier::Confirm);
+        assert_eq!(v.class, None);
+    }
 }
 
 #[cfg(test)]
