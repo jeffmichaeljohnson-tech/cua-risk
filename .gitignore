@@ -1,1 +1,15 @@
 target/
+
+# --- credential shapes: a public repo must refuse them by construction ---
+.env
+.env.*
+*.pem
+*.p8
+*.key
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+secrets.json
+credentials.json
+*.credentials.json
