@@ -9,6 +9,11 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runOne, runAll, report, checkBaseline, KILLED, SURVIVED, INCONCLUSIVE, NOT_APPLIED }
   from './mutation-runner.mjs';
+// Namespace import as well, so `inFlight` is read through a LIVE binding. Naming
+// it in the destructured import above would capture it once and always read the
+// initial null, which would make the layer-2 tests below pass against the very
+// defect they exist to catch.
+import * as runner from './mutation-runner.mjs';
 
 let pass = 0, fail = 0;
 const t = (name, fn) => {
@@ -224,6 +229,58 @@ t('the CLI entry point survives a path containing a space', () => {
     'string concatenation happened to match, so this test proves nothing');
   eq(url, pathToFileURL(path.join(spaced, 'runner.mjs')).href, 'pathToFileURL is not stable');
   rmSync(spaced, { recursive: true });
+});
+
+// --- layer 2 of the restoration, which was dead ---------------------------
+//
+// `inFlight` is declared, reset to null in the `finally`, and read by the SIGINT
+// handler -- but nothing ever assigned it, so `if (inFlight)` tested a value that
+// was always null and the handler could not fire. Two layers wearing the comment
+// of three. It survived because nothing exercised it: the signal path is awkward
+// to test, so it went untested, so the dead code read as a guarantee.
+//
+// These do not send a signal. They assert the STATE the handler depends on,
+// which is the part that was missing and is cheap to check.
+t('layer 2 records the in-flight mutation while the suite runs', () => {
+  const dir = fixture();
+  let seen = 'never-ran';
+  runOne(dir, spec(), () => {
+    seen = runner.inFlight;
+    return { out: 'Tests 1 passed', code: 1 };
+  });
+  assert(seen !== 'never-ran', 'the exec callback never ran, so this proves nothing');
+  assert(seen !== null, 'inFlight was null while a mutation was on disk — layer 2 is dead');
+  eq(seen.rel, 'a.js', 'inFlight.rel');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('...and it holds the ORIGINAL bytes, not the mutated ones', () => {
+  const dir = fixture();
+  let seen = null;
+  runOne(dir, spec(), () => {
+    seen = runner.inFlight;
+    return { out: 'Tests 1 passed', code: 1 };
+  });
+  // Restoring from the mutated bytes would "restore" the mutation, which is
+  // the one thing layer 2 must never do.
+  eq(seen.before, SRC, 'inFlight.before must be the pre-mutation source');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('...and it is cleared once the mutation is restored', () => {
+  const dir = fixture();
+  runOne(dir, spec(), () => ({ out: 'Tests 1 passed', code: 1 }));
+  eq(runner.inFlight, null, 'inFlight must be null after a completed run');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+t('...and it is cleared even when the suite throws', () => {
+  const dir = fixture();
+  try {
+    runOne(dir, spec(), () => { throw new Error('suite exploded'); });
+  } catch { /* the throw is the point */ }
+  eq(runner.inFlight, null, 'a throwing suite must not leave inFlight set');
+  rmSync(dir, { recursive: true, force: true });
 });
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
