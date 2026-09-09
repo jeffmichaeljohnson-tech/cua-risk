@@ -174,15 +174,41 @@ t('an INCONCLUSIVE result is called out, not quietly counted', () => {
   rmSync(d, { recursive: true });
 });
 
-t('a spec with NO `ran` marker degrades to exit-code-only, which is why every shipped spec declares one', () => {
+t('a spec with NO `ran` marker is REFUSED, not quietly defaulted', () => {
+  // Found by a red team. This used to default to `new RegExp('.')`, which
+  // matches any non-empty output -- so omitting the field turned every non-zero
+  // exit back into KILLED, including a syntax error under which no test ran.
+  // The guarantee this module exists to provide was opt-out by omission, and
+  // the test that claimed to cover it covered a different case.
   const d = fixture();
-  // Named for what it pins, not for what one might wish it pinned. With no
-  // marker the default matches any output, so the verdict is driven purely by
-  // the exit code -- exactly the behaviour this module was rewritten to escape.
-  // A reader scanning test names must not come away thinking the case is
-  // handled: it is not handled, it is DELEGATED to the spec, and `checkBaseline`
-  // is what refuses a marker that does not match this runner's output.
-  eq(runOne(d, spec({ ran: undefined }), exec('anything', 1)).verdict, KILLED, 'verdict');
+  let threw = null;
+  try { runOne(d, spec({ ran: undefined }), exec('anything', 1)); }
+  catch (e) { threw = e.message; }
+  assert(threw, 'a spec with no marker was accepted');
+  assert(/no `ran` marker/.test(threw), `unhelpful message: ${threw}`);
+  eq(readFileSync(path.join(d, 'a.js'), 'utf8'), SRC, 'the refusal still left the file untouched');
+  rmSync(d, { recursive: true });
+});
+
+t('a syntax error with no marker cannot be scored as KILLED', () => {
+  // The concrete case the red team demonstrated: an unparseable file, zero tests
+  // run, and the old runner called it a kill.
+  const d = fixture();
+  let threw = false;
+  try {
+    runOne(d, { name: 'syntax error', file: 'a.js', find: 'const LIMIT = 10;',
+                replace: 'const LIMIT = ((((;' }, exec('SyntaxError: Unexpected token', 1));
+  } catch { threw = true; }
+  assert(threw, 'a markerless syntax-error mutation was scored instead of refused');
+  rmSync(d, { recursive: true });
+});
+
+t('a replacement identical to the find string is NOT-APPLIED, never SURVIVED', () => {
+  // A mutation that changes nothing cannot tell you anything about coverage.
+  const d = fixture();
+  const r = runOne(d, spec({ replace: 'const LIMIT = 10;' }), exec('Tests  1 passed', 0));
+  eq(r.verdict, NOT_APPLIED, 'verdict');
+  assert(/changes nothing/.test(r.note), r.note);
   rmSync(d, { recursive: true });
 });
 
