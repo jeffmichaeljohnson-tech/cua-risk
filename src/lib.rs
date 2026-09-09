@@ -4,6 +4,49 @@
 //! can proceed automatically, requires confirmation, or is blocked.
 //!
 //! Classification rules from PRD-COMPUTER-USE.md S3.1.
+//!
+//! # Example
+//!
+//! ```
+//! use cua_risk::{classify, classify_web, ActionContext, WebActionContext, Tier, WriteClass};
+//!
+//! // A desktop click on a benign control proceeds automatically.
+//! let nav = ActionContext {
+//!     tool: "gui.click",
+//!     element_label: Some("Documents"),
+//!     element_role: Some("button"),
+//!     app_bundle_id: None,
+//!     allowed_apps: &[],
+//! };
+//! assert_eq!(classify(&nav), Tier::Auto);
+//!
+//! // Typing into a password field is never autonomous — it hands control back
+//! // to the human, whatever the tool or the allowlist say.
+//! let secret = ActionContext {
+//!     tool: "gui.type",
+//!     element_label: Some("Enter Password"),
+//!     element_role: Some("AXTextField"),
+//!     app_bundle_id: None,
+//!     allowed_apps: &[],
+//! };
+//! assert_eq!(classify(&secret), Tier::Blocked);
+//!
+//! // On the web, an irreversible verb needs confirmation, and the verdict names
+//! // the KIND of write so a confirm card can say what is about to happen.
+//! let post = WebActionContext {
+//!     tool: "browser_click",
+//!     element_role: Some("button"),
+//!     element_label: Some("Post Update"),
+//! };
+//! let verdict = classify_web(&post);
+//! assert_eq!(verdict.tier, Tier::Confirm);
+//! assert_eq!(verdict.class, Some(WriteClass::SocialPost));
+//! ```
+
+// No `unsafe` anywhere: a classifier that decides whether an action is safe has
+// no business reaching for an escape hatch that could make its own behaviour
+// undefined. `forbid` (not `deny`) so no inner block can re-enable it.
+#![forbid(unsafe_code)]
 
 /// Risk tier for a gui.* action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,15 +386,14 @@ pub fn classify_web(ctx: &WebActionContext<'_>) -> WebVerdict {
         (actuating && web_label_is_irreversible(ctx.element_label)) || ctx.tool == "browser_submit";
 
     if irreversible {
-        // Name the kind from the same trusted label the tier keyed on. A bare
-        // browser_submit (no label, or a label that names no kind) is a
-        // form/document write by construction, so it floors at DocumentWrite
-        // rather than leaving the card with a nameless "confirm".
-        let class = web_write_class(ctx.element_label)
-            .or_else(|| (ctx.tool == "browser_submit").then_some(WriteClass::DocumentWrite));
+        // Name the kind through the one shared helper, so the tool-plus-label
+        // floor (a bare browser_submit is a DocumentWrite even when its label
+        // names nothing) is derived in exactly one place. This used to inline
+        // the same `.or_else` and was a fourth copy of a rule that had already
+        // drifted once — see [`write_class_for`].
         return WebVerdict {
             tier: Tier::Confirm,
-            class,
+            class: write_class_for(ctx.tool, ctx.element_label),
         };
     }
 
