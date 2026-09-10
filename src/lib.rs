@@ -2811,3 +2811,133 @@ mod spoof_shape_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod generated_mutant_tests {
+    //! Written to close gaps that `cargo mutants` found and the hand-written
+    //! mutation set never proposed.
+    //!
+    //! The hand-written set in `mutations.json` is curated: it encodes defects a
+    //! person thought of. A generator does not think, which is exactly its value
+    //! -- it proposed 117 mutants here and 24 survived a suite that killed every
+    //! curated one. That gap is the argument for running both.
+    use super::*;
+
+    /// Every glyph in the Letterlike Symbols block that belongs to a
+    /// Mathematical Alphanumeric run but was encoded before that block existed.
+    ///
+    /// Deleting any single arm of the `match` these come from left the suite
+    /// green, because the previous test derived its alphabet from the marker
+    /// tables -- so a hole for a letter no marker word happens to use was never
+    /// exercised. This table is the Unicode fact stated directly, which is the
+    /// only form that cannot drift with the marker words.
+    const LETTERLIKE_HOLES: &[(char, char)] = &[
+        ('\u{210e}', 'h'), // PLANCK CONSTANT
+        ('\u{212c}', 'B'), // SCRIPT CAPITAL B
+        ('\u{2130}', 'E'), // SCRIPT CAPITAL E
+        ('\u{2131}', 'F'), // SCRIPT CAPITAL F
+        ('\u{210b}', 'H'), // SCRIPT CAPITAL H
+        ('\u{210c}', 'H'), // BLACK-LETTER CAPITAL H
+        ('\u{210d}', 'H'), // DOUBLE-STRUCK CAPITAL H
+        ('\u{2110}', 'I'), // SCRIPT CAPITAL I
+        ('\u{2111}', 'I'), // BLACK-LETTER CAPITAL I
+        ('\u{2112}', 'L'), // SCRIPT CAPITAL L
+        ('\u{2133}', 'M'), // SCRIPT CAPITAL M
+        ('\u{211b}', 'R'), // SCRIPT CAPITAL R
+        ('\u{211c}', 'R'), // BLACK-LETTER CAPITAL R
+        ('\u{211d}', 'R'), // DOUBLE-STRUCK CAPITAL R
+        ('\u{212f}', 'e'), // SCRIPT SMALL E
+        ('\u{210a}', 'g'), // SCRIPT SMALL G
+        ('\u{2134}', 'o'), // SCRIPT SMALL O
+        ('\u{212d}', 'C'), // BLACK-LETTER CAPITAL C
+        ('\u{2102}', 'C'), // DOUBLE-STRUCK CAPITAL C
+        ('\u{2115}', 'N'), // DOUBLE-STRUCK CAPITAL N
+        ('\u{2119}', 'P'), // DOUBLE-STRUCK CAPITAL P
+        ('\u{211a}', 'Q'), // DOUBLE-STRUCK CAPITAL Q
+        ('\u{2128}', 'Z'), // BLACK-LETTER CAPITAL Z
+        ('\u{2124}', 'Z'), // DOUBLE-STRUCK CAPITAL Z
+        ('\u{2145}', 'D'), // DOUBLE-STRUCK ITALIC CAPITAL D
+        ('\u{2146}', 'd'), // DOUBLE-STRUCK ITALIC SMALL D
+        ('\u{2147}', 'e'), // DOUBLE-STRUCK ITALIC SMALL E
+        ('\u{2148}', 'i'), // DOUBLE-STRUCK ITALIC SMALL I
+        ('\u{2149}', 'j'), // DOUBLE-STRUCK ITALIC SMALL J
+    ];
+
+    #[test]
+    fn every_letterlike_hole_folds_to_its_ascii_letter() {
+        for (glyph, ascii) in LETTERLIKE_HOLES {
+            assert_eq!(
+                math_alphanumeric_to_ascii(*glyph),
+                Some(*ascii),
+                "U+{:04X} must fold to '{}'",
+                *glyph as u32,
+                ascii
+            );
+        }
+    }
+
+    #[test]
+    fn the_letterlike_table_is_not_vacuous() {
+        // A control: the table above is the whole proof, so an empty or
+        // truncated table would make the test above pass while asserting almost
+        // nothing. 29 is the count of arms in the match it mirrors.
+        assert_eq!(
+            LETTERLIKE_HOLES.len(),
+            29,
+            "the hole table lost or gained an entry -- update it against the match arms"
+        );
+    }
+
+    #[test]
+    fn a_letterlike_hole_actually_defeats_a_marker_without_folding() {
+        // The point of folding is a spoof. Prove one: SCRIPT CAPITAL B spells
+        // a marker word that a raw comparison would miss.
+        let spoofed = "\u{2112}og in"; // SCRIPT CAPITAL L + "og in"
+        assert_ne!(spoofed, "Log in");
+        assert_eq!(fold_label(spoofed), fold_label("Log in"));
+    }
+
+    #[test]
+    fn a_whitespace_only_label_is_treated_as_no_label() {
+        // Four match guards read `Some(l) if !l.trim().is_empty()`. Replacing
+        // any guard with `true` left the suite green, so a label of pure
+        // whitespace took the Some() path and folded to an empty string.
+        // Absence and blankness must give the same answer.
+        for blank in ["", "   ", "\t", "\n  \t "] {
+            assert_eq!(
+                web_write_class(Some(blank)),
+                web_write_class(None),
+                "web_write_class disagrees on a blank label {blank:?}"
+            );
+            assert_eq!(
+                web_label_is_irreversible(Some(blank)),
+                web_label_is_irreversible(None),
+                "web_label_is_irreversible disagrees on a blank label {blank:?}"
+            );
+            assert_eq!(
+                label_is_suspicious(Some(blank)),
+                label_is_suspicious(None),
+                "label_is_suspicious disagrees on a blank label {blank:?}"
+            );
+            assert_eq!(
+                label_tier(Some(blank)),
+                label_tier(None),
+                "label_tier disagrees on a blank label {blank:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_messaging_heuristic_substring_stands_on_its_own() {
+        // `contains("mail") || contains("messenger") || contains("chat")`.
+        // Swapping any one `||` for `&&` left the suite green, because every
+        // fixture happened to satisfy more than one term. Each needs a bundle
+        // that satisfies ONLY it.
+        assert!(is_messaging_app("com.example.mailbox"), "mail alone");
+        assert!(is_messaging_app("com.example.messenger"), "messenger alone");
+        assert!(is_messaging_app("com.example.chatty"), "chat alone");
+        // Control: a bundle with none of the three is not messaging, so the
+        // three assertions above are not passing for an unrelated reason.
+        assert!(!is_messaging_app("com.example.spreadsheet"));
+    }
+}
