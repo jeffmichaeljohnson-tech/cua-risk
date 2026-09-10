@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   pull_request:
+
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -26,3 +31,20 @@ jobs:
         run: node scripts/mutation-runner.test.mjs
       - name: mutation
         run: node scripts/mutation-runner.mjs . mutations.json
+
+  # rust-version in Cargo.toml is a PROMISE to downstream users, and until this
+  # job existed nothing tested it -- CI ran only `stable`, which is several
+  # dozen releases ahead. Verified against 1.63.0 before this was added: both
+  # steps pass, so the manifest is telling the truth today. If a future change
+  # needs a newer feature, raise rust-version deliberately rather than deleting
+  # this job. Tests are run, not just `check`, because a crate can compile on an
+  # old toolchain and still fail its own suite there.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.63.0
+      - name: it compiles on the MSRV the manifest declares
+        run: cargo check --all-targets
+      - name: and its tests pass there too
+        run: cargo test
