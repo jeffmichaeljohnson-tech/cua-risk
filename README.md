@@ -37,7 +37,7 @@ checks it and it cannot drift from the code.
 cargo test
 ```
 
-121 tests plus the doc example, all passing. They are the specification: each
+129 tests plus the doc example, all passing. They are the specification: each
 names the case it pins.
 
 The property that matters is that neither degenerate classifier can pass. Both
