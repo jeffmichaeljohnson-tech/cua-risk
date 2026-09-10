@@ -2897,6 +2897,69 @@ mod generated_mutant_tests {
         assert_eq!(fold_label(spoofed), fold_label("Log in"));
     }
 
+    /// Every marker table that is matched with `contains()` against a folded
+    /// label. If a table is added and not listed here the count control below
+    /// fails, which is the only thing that stops this test from silently
+    /// covering less than it claims.
+    const ALL_MARKER_TABLES: &[(&str, &[&str])] = &[
+        ("WEB_IRREVERSIBLE_VERBS", WEB_IRREVERSIBLE_VERBS),
+        ("WEB_EMAIL_MARKERS", WEB_EMAIL_MARKERS),
+        ("WEB_SOCIAL_MARKERS", WEB_SOCIAL_MARKERS),
+        ("WEB_DOCUMENT_MARKERS", WEB_DOCUMENT_MARKERS),
+        ("WEB_2FA_MARKERS", WEB_2FA_MARKERS),
+        ("ACTION_VERBS", ACTION_VERBS),
+        ("TIER2_LABELS", TIER2_LABELS),
+        ("FILE_OP_LABELS", FILE_OP_LABELS),
+        ("CREDENTIAL_ROLES", CREDENTIAL_ROLES),
+        ("CREDENTIAL_MARKERS", CREDENTIAL_MARKERS),
+        ("PAYMENT_MARKERS", PAYMENT_MARKERS),
+        ("SUDO_MARKERS", SUDO_MARKERS),
+        ("SECURITY_SETTING_MARKERS", SECURITY_SETTING_MARKERS),
+        ("MESSAGING_MARKERS", MESSAGING_MARKERS),
+        ("BANKING_SUBSTRINGS", BANKING_SUBSTRINGS),
+    ];
+
+    #[test]
+    fn no_marker_is_empty_or_untrimmed() {
+        // `"anything".contains("")` is ALWAYS true. One empty string anywhere in
+        // these tables would classify every label as a match and the failure
+        // would be silent and total -- the classifier would simply say yes.
+        // A leading or trailing space is the quieter version of the same bug:
+        // it cannot match a folded label that was trimmed.
+        for (name, table) in ALL_MARKER_TABLES {
+            for m in *table {
+                assert!(!m.is_empty(), "{name} contains an EMPTY marker");
+                assert_eq!(*m, m.trim(), "{name} marker {m:?} has untrimmed whitespace");
+            }
+        }
+    }
+
+    #[test]
+    fn every_marker_is_already_in_folded_form() {
+        // Labels are lowercased by fold_label before matching. A marker holding
+        // an uppercase letter can therefore never match anything: it is a rule
+        // that reads as active and is dead.
+        for (name, table) in ALL_MARKER_TABLES {
+            for m in *table {
+                assert_eq!(
+                    *m,
+                    fold_label(m),
+                    "{name} marker {m:?} is not in folded form, so it can never match"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_marker_table_list_is_complete() {
+        // Control for the two tests above: they only cover what this list names.
+        assert_eq!(
+            ALL_MARKER_TABLES.len(),
+            15,
+            "a marker table was added or removed -- add it to ALL_MARKER_TABLES"
+        );
+    }
+
     #[test]
     fn a_whitespace_only_label_is_treated_as_no_label() {
         // Four match guards read `Some(l) if !l.trim().is_empty()`. Replacing
