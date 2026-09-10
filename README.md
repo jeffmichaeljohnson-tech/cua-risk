@@ -81,6 +81,42 @@ exit without it is `INCONCLUSIVE` — never counted as caught.
 The runner has its own suite (`node scripts/mutation-runner.test.mjs`), because a tool that measures test suites
 is itself a check, and a check nobody has watched fail is a claim.
 
+### The curated set is not a mutation score
+
+Twenty-five of twenty-five is a perfect result against a list I wrote, and a
+perfect result against your own list proves that your imagination and your tests
+agree. They always do. So the number below is the one to read:
+
+```
+cargo install cargo-mutants && cargo mutants --no-shuffle
+```
+
+**117 mutants generated, 107 viable, 102 caught — 95.3%.** The five that remain
+are equivalent: the mutated code cannot be distinguished from the original by
+any input, so no test can catch them and writing one would mean writing a test
+that passes either way.
+
+The generator earned its place the first time it ran. It found **24** survivors
+against a suite that had caught every curated mutation. Eighteen were single
+arms of the Letterlike-Symbols fold — the glyphs that belong to a Mathematical
+Alphanumeric run but were encoded before that block existed — because the test
+covering that fold derived its alphabet from the marker words, so a hole for a
+letter no marker happens to use was never exercised. Deleting the arm for
+`U+2112 SCRIPT CAPITAL L` left the suite green while a button labelled `ℒog in`
+stopped matching the marker it should have matched.
+
+The best finding came from the four that could *not* be caught. Each is a fast
+path reading `Some(l) if !l.trim().is_empty()`, and removing it only lets a
+blank label reach a marker scan that no blank label can satisfy — which is true
+**only because no marker is an empty string, and nothing asserted that.**
+`"anything".contains("")` is always true, so one empty entry in any of the
+fifteen marker tables would have made this classifier return a match for every
+label it was ever shown. Three invariants now hold those tables, and each was
+driven red with a planted defect before being trusted.
+
+A scheduled workflow re-runs the generator, so this number is measured rather
+than remembered.
+
 They are dispositions, ladder steps and label handling: flipping what an
 unrecognised tool gets, downgrading typing to auto, disabling each rung of the
 escalation ladder, and removing the label fold described below.

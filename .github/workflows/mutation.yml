@@ -1,0 +1,43 @@
+name: Mutation score
+
+# `mutations.json` is a CURATED set -- changes a person thought of -- and this
+# crate catches all 25 of them. That number reads like a mutation score and is
+# not one: a perfect result against a set you wrote proves your imagination and
+# your tests agree, which they always do.
+#
+# cargo-mutants generates its own mutants from the syntax tree instead. When it
+# was first pointed at this crate it produced 117 and 24 survived, including
+# eighteen arms of the Letterlike-Symbols fold that no curated mutation had
+# touched. Chasing why four others could not be caught is what surfaced the
+# missing marker-table invariants. That is the argument for running both.
+#
+# Off the pull-request path: minutes rather than seconds, and a score is a trend
+# rather than a verdict on one patch.
+on:
+  schedule:
+    - cron: '51 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mutants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      # --no-shuffle keeps the order stable, so two runs are comparable and a
+      # diff in the output means a real change rather than a reordering.
+      - name: mutation score
+        run: cargo mutants --no-shuffle -j4
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-report
+          path: mutants.out/
+          if-no-files-found: ignore
