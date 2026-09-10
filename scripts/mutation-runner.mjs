@@ -92,7 +92,7 @@ export function runOne(root, spec, exec) {
       + 'Without it a build failure cannot be told from a caught mutation. '
       + 'Declare a pattern the test runner prints only when tests actually execute.');
   }
-  const ran = new RegExp(spec.ran).test(out);
+  const ran = new RegExp(spec.ran).test(stripAnsi(out));
   if (code === 0) return { ...spec, verdict: ran ? SURVIVED : INCONCLUSIVE,
     note: ran ? 'suite passed with the mutation in place' : 'exit 0 but no evidence tests ran' };
   return { ...spec, verdict: ran ? KILLED : INCONCLUSIVE,
@@ -108,13 +108,39 @@ export function runOne(root, spec, exec) {
  * mutations then reported NOT-APPLIED because the text they searched for had
  * already been replaced. A leftover mutation must be loud, not inherited.
  */
+/**
+ * Strip ANSI escape sequences before matching the `ran` marker.
+ *
+ * The marker is a pattern the test runner prints only when tests actually
+ * executed, and it is matched against raw stdout. Colour codes land BETWEEN the
+ * words a human sees, so `Tests  817 passed` arrives as
+ * `Tests \x1b[22m \x1b[1m\x1b[32m817 passed` and a plain-text pattern misses it.
+ *
+ * This is not hypothetical. Upgrading vitest 2 to 5 changed exactly that: the
+ * newer version emits colour to a pipe where the older one did not, so the
+ * marker stopped matching and every mutant scored INCONCLUSIVE. The runner was
+ * RIGHT to refuse -- it could not prove tests had run, and refusing is what it
+ * exists to do -- but the refusal was caused by decoration rather than by
+ * anything about the code under test.
+ *
+ * The reason to fix it here rather than by setting NO_COLOR in each project is
+ * that this failed on Linux and PASSED on macOS with the same versions, so it
+ * would have reported a clean 33-killed locally and gone red only in CI. A
+ * runner whose verdict depends on whether stdout happens to be coloured is
+ * measuring the terminal, not the suite.
+ */
+export function stripAnsi(s) {
+  // eslint-disable-next-line no-control-regex
+  return String(s).replace(/\u001B\[[0-9;]*m/g, '');
+}
+
 export function checkBaseline(exec, ran) {
   const { out, code } = exec();
   if (code !== 0) {
     return { ok: false, why: 'the suite does not pass before any mutation is applied — '
       + 'the tree may carry a leftover mutation from an interrupted run (check `git status`)' };
   }
-  if (!new RegExp(ran ?? '.').test(out)) {
+  if (!new RegExp(ran ?? '.').test(stripAnsi(out))) {
     return { ok: false, why: 'the baseline exited 0 but printed no evidence any test ran — '
       + 'the `ran` marker does not match this runner\'s output' };
   }

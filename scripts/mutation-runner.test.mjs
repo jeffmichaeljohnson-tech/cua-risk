@@ -283,5 +283,42 @@ t('...and it is cleared even when the suite throws', () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+// ---------------------------------------------------------------------------
+// ANSI decoration must not decide a verdict
+//
+// Found by running CI on Linux: vitest 5 emits colour to a pipe where vitest 2
+// did not, so `Tests  817 passed` arrives with escape codes between the word and
+// the count and a plain-text marker misses it. Every mutant then scored
+// INCONCLUSIVE -- correctly, since the runner could not prove tests had run, but
+// for a reason that has nothing to do with the code under test.
+//
+// The sharp edge is that the SAME versions matched on macOS and missed on Linux,
+// so a local run reported a clean 33-killed while CI would have reported nothing
+// caught at all.
+// ---------------------------------------------------------------------------
+{
+  const ESC = String.fromCharCode(27);
+  const coloured = '      Tests ' + ESC + '[22m ' + ESC + '[1m' + ESC + '[32m817 passed' + ESC + '[39m (817)';
+  const marker = 'Tests\\s+\\d+ (passed|failed)';
+
+  t('a coloured summary line still counts as evidence that tests ran', () => {
+    assert(!new RegExp(marker).test(coloured), 'fixture is wrong: the raw line must NOT match, or this test proves nothing');
+    assert(new RegExp(marker).test(runner.stripAnsi(coloured)), 'the marker must match once decoration is stripped');
+  });
+
+  t('stripAnsi leaves undecorated output byte-identical', () => {
+    const plain = '      Tests  817 passed (817)';
+    assert(runner.stripAnsi(plain) === plain, 'plain text must pass through unchanged');
+  });
+
+  t('a coloured run that FAILED is still KILLED, not INCONCLUSIVE', () => {
+    // The direction that matters. Before the fix, a caught mutation whose output
+    // happened to be coloured was scored INCONCLUSIVE -- a real kill discarded.
+    const spec = { name: 'x', file: 'f', find: 'a', replace: 'b', ran: marker };
+    const out = coloured.replace('817 passed', '816 passed | 1 failed');
+    assert(new RegExp(spec.ran).test(runner.stripAnsi(out)), 'a coloured failure line must read as tests-ran');
+  });
+}
+
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);
