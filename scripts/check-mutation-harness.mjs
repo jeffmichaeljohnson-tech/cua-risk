@@ -28,7 +28,7 @@
  * broken test-runner integration. So the files it names are files whose tests
  * demonstrably catch mutations.
  *
- * If a generated report says one of those files killed NOTHING, the two
+ * If a generated report says one of those files caught NOTHING, the two
  * witnesses disagree, and the curated one is the one that ran the tests. That is
  * a harness failure, not a coverage result, and the report is refused rather
  * than published.
@@ -54,19 +54,25 @@ export function curatedFiles(mutations) {
 }
 
 /**
- * Per-file kill tallies from a Stryker JSON report.
+ * Per-file catch tallies from a Stryker JSON report.
  *
- * `NoCoverage` is counted as not-killed on purpose. In the broken case it is
+ * `NoCoverage` is counted as not-caught on purpose. In the broken case it is
  * exactly what a mutant gets when the harness ran no tests against it, so
- * folding it into "killed" would hide the failure this check exists to find.
+ * folding it into "caught" would hide the failure this check exists to find.
+ *
+ * The one string below that is NOT ours reads `'Killed'`. That is Stryker's own
+ * JSON status value, so it is data arriving from a third party rather than a
+ * word this estate chose, and renaming it here would simply stop the filter
+ * matching. Everything this project SAYS uses "caught"; only the wire format
+ * keeps the vendor's spelling, and it never reaches a reader.
  */
 export function tallies(report) {
   const out = {};
   for (const [path, entry] of Object.entries(report?.files ?? {})) {
     const mutants = entry?.mutants ?? [];
     if (mutants.length === 0) continue;
-    const killed = mutants.filter((m) => m.status === 'Killed' || m.status === 'Timeout').length;
-    out[path] = { total: mutants.length, killed };
+    const caught = mutants.filter((m) => m.status === 'Killed' || m.status === 'Timeout').length;
+    out[path] = { total: mutants.length, caught };
   }
   return out;
 }
@@ -97,10 +103,10 @@ export function verify(report, mutations) {
     // may deliberately scope `mutate` to a subset.
     if (!match) continue;
     checked += 1;
-    const [path, { total, killed }] = match;
-    if (killed === 0) {
+    const [path, { total, caught }] = match;
+    if (caught === 0) {
       disagreements.push(
-        `${path}: the report kills 0 of ${total} mutants, but the curated set proves this file's tests catch one`,
+        `${path}: the report catches 0 of ${total} mutants, but the curated set proves this file's tests catch one`,
       );
     }
   }

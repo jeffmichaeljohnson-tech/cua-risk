@@ -4,13 +4,13 @@
 //
 // The distinction this exists for: a mutation that makes the code STOP
 // COMPILING also exits non-zero. A runner that only reads the exit code calls
-// that "killed" and inflates its own score with mutations the tests never saw.
+// that "caught" and inflates its own score with mutations the tests never saw.
 // So a spec declares a `ran` marker — a pattern the test runner prints only when
 // it actually executed tests — and a non-zero exit WITHOUT that marker is
-// reported INCONCLUSIVE, never KILLED.
+// reported INCONCLUSIVE, never CAUGHT.
 //
 // Verdicts:
-//   KILLED       the suite ran and failed        -> the mutation is caught
+//   CAUGHT       the suite ran and failed        -> the mutation is caught
 //   SURVIVED     the suite ran and passed        -> nothing pins this behaviour
 //   INCONCLUSIVE non-zero, but no tests ran      -> proves nothing either way
 //   NOT-APPLIED  the pattern was absent, ambiguous, or changed nothing
@@ -22,7 +22,7 @@
 // substring, and a half-working detector here would be worse than a documented
 // limit: it is the same argument this file makes for INCONCLUSIVE.
 //
-// Exit 0 only when every mutation is KILLED. SURVIVED, INCONCLUSIVE and
+// Exit 0 only when every mutation is CAUGHT. SURVIVED, INCONCLUSIVE and
 // NOT-APPLIED are all non-zero: a mutation that could not be applied is not a
 // mutation that passed.
 
@@ -35,7 +35,7 @@ import path from 'node:path';
 // The mutation currently written to disk, so a caught signal can undo it.
 export let inFlight = null;
 
-export const KILLED = 'KILLED', SURVIVED = 'SURVIVED',
+export const CAUGHT = 'CAUGHT', SURVIVED = 'SURVIVED',
              INCONCLUSIVE = 'INCONCLUSIVE', NOT_APPLIED = 'NOT-APPLIED';
 
 const sha = (s) => createHash('sha256').update(s).digest('hex');
@@ -84,7 +84,7 @@ export function runOne(root, spec, exec) {
   //
   // This used to be `spec.ran ?? '.'`, and `new RegExp('.')` matches any
   // non-empty output — so omitting the field turned every non-zero exit back
-  // into KILLED, including a syntax error under which no test ran. The whole
+  // into CAUGHT, including a syntax error under which no test ran. The whole
   // INCONCLUSIVE mechanism was opt-out by omission, which is the weakest
   // possible form of a guarantee this file's own header calls its purpose.
   if (!spec.ran) {
@@ -95,7 +95,7 @@ export function runOne(root, spec, exec) {
   const ran = new RegExp(spec.ran).test(stripAnsi(out));
   if (code === 0) return { ...spec, verdict: ran ? SURVIVED : INCONCLUSIVE,
     note: ran ? 'suite passed with the mutation in place' : 'exit 0 but no evidence tests ran' };
-  return { ...spec, verdict: ran ? KILLED : INCONCLUSIVE,
+  return { ...spec, verdict: ran ? CAUGHT : INCONCLUSIVE,
     note: ran ? 'suite ran and failed' : `exit ${code} with no evidence tests ran — likely a build error` };
 }
 
@@ -103,7 +103,7 @@ export function runOne(root, spec, exec) {
  * The suite must be green BEFORE any mutation is applied.
  *
  * Without this every verdict is measured against an unknown baseline. The case
- * that motivated it: a run was killed mid-mutation, the `finally` never ran, and
+ * that motivated it: a run was stopped mid-mutation, the `finally` never ran, and
  * the mutated file became the starting point for the next run — where two
  * mutations then reported NOT-APPLIED because the text they searched for had
  * already been replaced. A leftover mutation must be loud, not inherited.
@@ -125,7 +125,7 @@ export function runOne(root, spec, exec) {
  *
  * The reason to fix it here rather than by setting NO_COLOR in each project is
  * that this failed on Linux and PASSED on macOS with the same versions, so it
- * would have reported a clean 33-killed locally and gone red only in CI. A
+ * would have reported a clean 33-caught locally and gone red only in CI. A
  * runner whose verdict depends on whether stdout happens to be coloured is
  * measuring the terminal, not the suite.
  */
@@ -156,7 +156,7 @@ export function report(results) {
   const lines = [];
   for (const r of results) lines.push(`  ${r.verdict.padEnd(12)} ${r.name}`);
   lines.push('');
-  lines.push(`  ${by(KILLED).length} killed, ${by(SURVIVED).length} survived, `
+  lines.push(`  ${by(CAUGHT).length} caught, ${by(SURVIVED).length} survived, `
     + `${by(INCONCLUSIVE).length} inconclusive, ${by(NOT_APPLIED).length} not applied`
     + ` (of ${results.length})`);
   if (by(INCONCLUSIVE).length)
@@ -195,11 +195,11 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   //      a JS handler cannot fire while a suite is actually running. They cover
   //      a signal that lands between mutations.
   //   3. The baseline check above. The one that matters, because SIGKILL cannot
-  //      be caught by anything: it turns the aftermath of an uncatchable kill
+  //      be caught by anything: it turns the aftermath of an uncatchable stop
   //      into a loud abort on the next run rather than a silent wrong answer.
   //
   // Layer 3 exists because layers 1 and 2 were both defeated in practice: a run
-  // was killed mid-mutation and the leftover silently became the next baseline.
+  // was stopped mid-mutation and the leftover silently became the next baseline.
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(sig, () => {
       if (inFlight) {
@@ -219,5 +219,5 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     process.exit(2);
   }
   console.log(report(results));
-  process.exit(results.every((r) => r.verdict === KILLED) ? 0 : 1);
+  process.exit(results.every((r) => r.verdict === CAUGHT) ? 0 : 1);
 }

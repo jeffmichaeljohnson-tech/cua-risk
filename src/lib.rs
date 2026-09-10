@@ -2819,7 +2819,7 @@ mod generated_mutant_tests {
     //!
     //! The hand-written set in `mutations.json` is curated: it encodes defects a
     //! person thought of. A generator does not think, which is exactly its value
-    //! -- it proposed 117 mutants here and 24 survived a suite that killed every
+    //! -- it proposed 117 mutants here and 24 survived a suite that caught every
     //! curated one. That gap is the argument for running both.
     use super::*;
 

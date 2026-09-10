@@ -4,7 +4,7 @@
  *
  * The guard's whole value is that it refuses a number rather than publishing a
  * wrong one, so the half that must not fire is the larger half here: a low score
- * is a legitimate result and must pass, and only a curated file killing NOTHING
+ * is a legitimate result and must pass, and only a curated file catching NOTHING
  * is treated as the harness lying.
  */
 import { verify, curatedFiles, tallies, samePath } from './check-mutation-harness.mjs';
@@ -32,14 +32,14 @@ const fileEntry = (n, k) => ({
 
 console.log('\nAGREEMENT — a healthy report passes');
 
-t('a report that kills mutants in every curated file is accepted', () => {
+t('a report that catches mutants in every curated file is accepted', () => {
   const report = { files: { 'src/a.ts': fileEntry(10, 9), 'src/b.ts': fileEntry(10, 4) } };
   const r = verify(report, [{ file: 'src/a.ts' }, { file: 'src/b.ts' }]);
   assert(r.code === 0, `expected 0, got ${r.code}: ${r.why}`);
 });
 
 t('a LOW score is a result, not a harness failure', () => {
-  // The guard must not become a score floor by the back door. One kill out of a
+  // The guard must not become a score floor by the back door. One catch out of a
   // hundred is a bad suite and a true measurement; only ZERO is suspect.
   const report = { files: { 'src/a.ts': fileEntry(100, 1) } };
   const r = verify(report, [{ file: 'src/a.ts' }]);
@@ -53,15 +53,15 @@ t('a Timeout counts as caught', () => {
 
 console.log('\nDISAGREEMENT — the case this exists for');
 
-t('a curated file that kills NOTHING is refused', () => {
+t('a curated file that catches NOTHING is refused', () => {
   const report = { files: { 'src/a.ts': fileEntry(151, 0) } };
   const r = verify(report, [{ file: 'src/a.ts' }]);
   assert(r.code === 1, `expected 1, got ${r.code}`);
-  assert(/kills 0 of 151/.test(r.why), `the refusal must name the tally, got: ${r.why}`);
+  assert(/catches 0 of 151/.test(r.why), `the refusal must name the tally, got: ${r.why}`);
   assert(/src\/a\.ts/.test(r.why), 'the refusal must name the file');
 });
 
-t('NoCoverage is NOT folded into killed', () => {
+t('NoCoverage is NOT folded into caught', () => {
   // In the real failure a mutant the harness never tested came back NoCoverage.
   // Counting it as caught would hide exactly this defect.
   const report = { files: { 'src/a.ts': { mutants: [{ status: 'NoCoverage' }, { status: 'NoCoverage' }] } } };
@@ -107,7 +107,7 @@ t('curatedFiles reads both the bare-array and wrapped spec shapes', () => {
 
 t('tallies ignores files with no mutants', () => {
   const out = tallies({ files: { 'src/a.ts': { mutants: [] }, 'src/b.ts': fileEntry(3, 1) } });
-  assert(!('src/a.ts' in out) && out['src/b.ts'].killed === 1, 'an empty file is not a zero-kill file');
+  assert(!('src/a.ts' in out) && out['src/b.ts'].caught === 1, 'an empty file is not a zero-catch file');
 });
 
 t('samePath matches across leading ./ and path depth, and rejects a near-miss', () => {

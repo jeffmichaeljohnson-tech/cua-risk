@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 // Tests for mutation-runner. The tool measures other suites, so its own
-// failure modes are the point: a false KILLED inflates a score, and a failed
+// failure modes are the point: a false CAUGHT inflates a score, and a failed
 // restore corrupts the tree it was measuring.
 
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { runOne, runAll, report, checkBaseline, KILLED, SURVIVED, INCONCLUSIVE, NOT_APPLIED }
+import { runOne, runAll, report, checkBaseline, CAUGHT, SURVIVED, INCONCLUSIVE, NOT_APPLIED }
   from './mutation-runner.mjs';
 // Namespace import as well, so `inFlight` is read through a LIVE binding. Naming
 // it in the destructured import above would capture it once and always read the
@@ -38,9 +38,9 @@ const exec = (out, code) => () => ({ out, code });
 
 console.log('\nVERDICTS');
 
-t('a suite that ran and failed is KILLED', () => {
+t('a suite that ran and failed is CAUGHT', () => {
   const d = fixture();
-  eq(runOne(d, spec(), exec('Tests  9 passed | 1 failed', 1)).verdict, KILLED, 'verdict');
+  eq(runOne(d, spec(), exec('Tests  9 passed | 1 failed', 1)).verdict, CAUGHT, 'verdict');
   rmSync(d, { recursive: true });
 });
 
@@ -50,10 +50,10 @@ t('a suite that ran and passed is SURVIVED', () => {
   rmSync(d, { recursive: true });
 });
 
-t('a BUILD ERROR is INCONCLUSIVE, never KILLED — the defect this tool exists for', () => {
+t('a BUILD ERROR is INCONCLUSIVE, never CAUGHT — the defect this tool exists for', () => {
   const d = fixture();
   // Non-zero exit, but the runner never printed evidence that tests executed.
-  // A runner reading only the exit code scores this as a kill it never earned.
+  // A runner reading only the exit code scores this as a catch it never earned.
   const r = runOne(d, spec(), exec('error TS2304: Cannot find name.\n', 2));
   eq(r.verdict, INCONCLUSIVE, 'verdict');
   assert(/no evidence tests ran/.test(r.note), `note did not explain: ${r.note}`);
@@ -143,7 +143,7 @@ t('a green baseline is ok', () => {
 });
 
 t('a RED baseline aborts, and names the leftover-mutation cause', () => {
-  // The incident this encodes: a run was killed mid-mutation, the restore never
+  // The incident this encodes: a run was stopped mid-mutation, the restore never
   // happened, and the mutated file silently became the next run's baseline. Two
   // mutations then reported NOT-APPLIED because their search text was already
   // gone -- a wrong answer that looked like a clean result.
@@ -168,7 +168,7 @@ t('the report counts every verdict and names the total', () => {
   const rs = runAll(d, [spec(), spec({ name: 'b' }), spec({ name: 'c', find: 'absent' })],
     exec('Tests  1 failed', 1));
   const out = report(rs);
-  assert(/2 killed, 0 survived, 0 inconclusive, 1 not applied \(of 3\)/.test(out), out);
+  assert(/2 caught, 0 survived, 0 inconclusive, 1 not applied \(of 3\)/.test(out), out);
   rmSync(d, { recursive: true });
 });
 
@@ -182,7 +182,7 @@ t('an INCONCLUSIVE result is called out, not quietly counted', () => {
 t('a spec with NO `ran` marker is REFUSED, not quietly defaulted', () => {
   // Found by a red team. This used to default to `new RegExp('.')`, which
   // matches any non-empty output -- so omitting the field turned every non-zero
-  // exit back into KILLED, including a syntax error under which no test ran.
+  // exit back into CAUGHT, including a syntax error under which no test ran.
   // The guarantee this module exists to provide was opt-out by omission, and
   // the test that claimed to cover it covered a different case.
   const d = fixture();
@@ -195,9 +195,9 @@ t('a spec with NO `ran` marker is REFUSED, not quietly defaulted', () => {
   rmSync(d, { recursive: true });
 });
 
-t('a syntax error with no marker cannot be scored as KILLED', () => {
+t('a syntax error with no marker cannot be scored as CAUGHT', () => {
   // The concrete case the red team demonstrated: an unparseable file, zero tests
-  // run, and the old runner called it a kill.
+  // run, and the old runner called it a catch.
   const d = fixture();
   let threw = false;
   try {
@@ -293,7 +293,7 @@ t('...and it is cleared even when the suite throws', () => {
 // for a reason that has nothing to do with the code under test.
 //
 // The sharp edge is that the SAME versions matched on macOS and missed on Linux,
-// so a local run reported a clean 33-killed while CI would have reported nothing
+// so a local run reported a clean 33-caught while CI would have reported nothing
 // caught at all.
 // ---------------------------------------------------------------------------
 {
@@ -311,9 +311,9 @@ t('...and it is cleared even when the suite throws', () => {
     assert(runner.stripAnsi(plain) === plain, 'plain text must pass through unchanged');
   });
 
-  t('a coloured run that FAILED is still KILLED, not INCONCLUSIVE', () => {
+  t('a coloured run that FAILED is still CAUGHT, not INCONCLUSIVE', () => {
     // The direction that matters. Before the fix, a caught mutation whose output
-    // happened to be coloured was scored INCONCLUSIVE -- a real kill discarded.
+    // happened to be coloured was scored INCONCLUSIVE -- a real catch discarded.
     const spec = { name: 'x', file: 'f', find: 'a', replace: 'b', ran: marker };
     const out = coloured.replace('817 passed', '816 passed | 1 failed');
     assert(new RegExp(spec.ran).test(runner.stripAnsi(out)), 'a coloured failure line must read as tests-ran');
